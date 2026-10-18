@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recsaei"
+version = "0.1.0"
+description = "Sparse autoencoder interpretation and editing with representation autoencoders."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "saev",
+  "huggingface-hub>=0.34",
+  "numpy>=2.3.2",
+  "pillow>=10.4",
+  "scipy>=1.16.1",
+  "torch>=2.9",
+  "torchvision>=0.24",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.3", "ruff>=0.8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*"]
+
+[tool.uv.sources]
+saev = { path = "saev", editable = true }
