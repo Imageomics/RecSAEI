@@ -48,7 +48,7 @@ class Config:
 
     Attributes:
         shards: Directory with .bin shards and a metadata.json file.
-        tokens: Which kinds of tokens to use. 'special' indicates the special tokens token (if any). 'content' returns content tokens. 'all' returns both content and special tokens.
+        tokens: Which kinds of tokens to use. 'special' returns CLS tokens, 'content' returns content tokens.
         layer: Which ViT layer(s) to read from disk. ``-2`` selects the second-to-last layer. ``"all"`` enumerates every recorded layer.
         batch_size: Batch size.
         batch_timeout_s: How long to wait for at least one batch.
@@ -59,7 +59,7 @@ class Config:
     """
 
     shards: pathlib.Path = pathlib.Path("$SAEV_SCRATCH/saev/shards/abcdefg")
-    tokens: tp.Literal["content"] = "content"
+    tokens: tp.Literal["special", "content"] = "content"
     layer: int | tp.Literal["all"] = -2
     batch_size: int = 1024 * 16
     batch_timeout_s: float = 30.0
@@ -92,9 +92,13 @@ def _manager_main(
     )
 
     # 0. PRE-CONDITIONS
-    if cfg.tokens != "content" or not isinstance(cfg.layer, int):
+    if cfg.tokens not in ("content", "special") or not isinstance(cfg.layer, int):
         raise NotImplementedError(
-            "High-throughput loader only supports `content` and fixed `layer` mode for now."
+            "High-throughput loader only supports `content`/`special` and fixed `layer` mode for now."
+        )
+    if cfg.tokens == "special" and not md.cls_token:
+        raise ValueError(
+            "Cannot load `special` tokens because shards do not include a CLS token."
         )
 
     assert cfg.layer in md.layers, f"Layer {cfg.layer} not in {md.layers}"
@@ -107,7 +111,7 @@ def _manager_main(
         # Check if labels.bin exists
         labels_mmap = None
         labels_path = cfg.shards / "labels.bin"
-        if labels_path.exists():
+        if cfg.tokens == "content" and labels_path.exists():
             labels_mmap = np.memmap(
                 labels_path,
                 mode="r",
@@ -121,7 +125,7 @@ def _manager_main(
             assert shard.n_examples == shard_info[0].n_examples == md.examples_per_shard
 
         # Calculate total number of samples
-        n_samples = md.n_examples * md.content_tokens_per_example
+        n_samples = len(index_map)
 
         logger.debug("Found %d samples.", n_samples)
 
@@ -220,6 +224,10 @@ class DataLoader:
             raise RuntimeError(f"Activations are not saved at '{self.cfg.shards}'.")
 
         self.md = shards.Metadata.load(self.cfg.shards)
+        if self.cfg.tokens == "special" and not self.md.cls_token:
+            raise ValueError(
+                "Cannot load `special` tokens because shards do not include a CLS token."
+            )
 
         # Validate shard files exist and are non-empty
         shard_info = shards.ShardInfo.load(self.cfg.shards)

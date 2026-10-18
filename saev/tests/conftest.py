@@ -1,4 +1,3 @@
-import collections.abc
 import contextlib
 import pathlib
 import tempfile
@@ -7,14 +6,6 @@ import beartype
 import pytest
 
 import saev.data
-
-INTEGRATION_FIXTURES = frozenset({
-    "shards_dir",
-    "shards_dir_with_token_labels",
-    "segfolder_root",
-    "dinov3_ckpt",
-    "imgfolder_root",
-})
 
 
 def pytest_addoption(parser):
@@ -57,17 +48,6 @@ def pytest_generate_tests(metafunc):
 
         ids = [f"shards={p.name[:8]}" for p in paths]
         metafunc.parametrize("shards_dir", paths, ids=ids, indirect=True)
-
-
-@beartype.beartype
-def uses_integration_fixture(fixturenames: collections.abc.Collection[str]) -> bool:
-    return not INTEGRATION_FIXTURES.isdisjoint(fixturenames)
-
-
-def pytest_collection_modifyitems(items: list[pytest.Function]) -> None:
-    for item in items:
-        if uses_integration_fixture(item.fixturenames):
-            item.add_marker(pytest.mark.integration)
 
 
 @pytest.fixture(scope="session")
@@ -189,6 +169,28 @@ class namespace:
                 labels[example_idx, token_idx] = (example_idx * 10 + token_idx) % 150
 
         labels.flush()
+
+    @staticmethod
+    def make_cls_tokens_distinct(shards_dir: pathlib.Path):
+        """Perturb saved CLS activations so small tests have non-zero variance."""
+        import numpy as np
+
+        from saev.data import shards
+
+        md = saev.data.Metadata.load(shards_dir)
+        shard_info = shards.ShardInfo.load(shards_dir)
+
+        for shard_i, shard in enumerate(shard_info):
+            acts = np.memmap(
+                shards_dir / shard.name,
+                mode="r+",
+                dtype=np.float32,
+                shape=md.shard_shape,
+            )
+            for example_i in range(shard.n_examples):
+                global_i = shard_i * md.examples_per_shard + example_i
+                acts[example_i, :, 0, 0] += global_i / max(1, md.n_examples)
+            acts.flush()
 
 
 pytest.helpers = namespace

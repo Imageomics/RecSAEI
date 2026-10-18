@@ -22,7 +22,7 @@ class Config:
 
     Attributes:
         shards: Directory with .bin shards and a metadata.json file.
-        tokens: Which kinds of tokens to use. 'special' indicates the special tokens token (if any). 'content' returns content tokens. 'all' returns both content and special tokens.
+        tokens: Which kinds of tokens to use. 'special' returns CLS tokens, 'content' returns content tokens, and 'all' returns all saved tokens.
         layer: Which ViT layer(s) to read from disk. ``-2`` selects the second-to-last layer. ``"all"`` enumerates every recorded layer.
         debug: Whether the dataloader process should log debug messages.
     """

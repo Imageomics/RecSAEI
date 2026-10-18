@@ -86,7 +86,7 @@ class Filepaths:
 
     @classmethod
     def from_run(cls, run: disk.Run, md: Metadata):
-        root = run.inference / md.hash
+        root = run.inference / md.shard_id
         root.mkdir(exist_ok=True, parents=True)
         return cls(
             mean_values=root / "mean_values.pt",
@@ -138,7 +138,7 @@ def need_compute(cfg: Config) -> tuple[bool, str, Filepaths]:
 def worker_fn(cfg: Config):
     run = disk.Run(cfg.run)
     md = Metadata.load(cfg.data.shards)
-    root = run.inference / md.hash
+    root = run.inference / md.shard_id
 
     # Check if we need to compute activations
     do, reason, fpaths = need_compute(cfg)
@@ -149,7 +149,12 @@ def worker_fn(cfg: Config):
     with open(root / "config.json", "wb") as fd:
         helpers.jdump(cfg, fd)
 
-    assert cfg.data.tokens == "content"
+    if cfg.data.tokens not in ("content", "special"):
+        raise NotImplementedError(
+            "Inference only supports `content` and `special` token modes."
+        )
+    if cfg.data.tokens == "special" and cfg.ignore_labels:
+        raise NotImplementedError("Token label filtering only supports `content` tokens.")
     sae = nn.load(run.ckpt).to(cfg.device)
 
     if cfg.save:
@@ -161,11 +166,14 @@ def worker_fn(cfg: Config):
         mean_values_s = None
         token_acts_blocks = None
 
-    batch_size = (
-        cfg.data.batch_size
-        // md.content_tokens_per_example
-        * md.content_tokens_per_example
-    )
+    if cfg.data.tokens == "content":
+        batch_size = (
+            cfg.data.batch_size
+            // md.content_tokens_per_example
+            * md.content_tokens_per_example
+        )
+    else:
+        batch_size = cfg.data.batch_size
     dataloader = OrderedDataLoader(
         dataclasses.replace(cfg.data, batch_size=batch_size),
     )
@@ -223,13 +231,17 @@ def worker_fn(cfg: Config):
 
         # Update statistics
         f_x = out.f_x
-        distributions_nm[batch["example_idx"][mask_b], :] = f_x[mask_b, : cfg.n_dists]
+        if cfg.data.tokens == "content":
+            batch_idx = (
+                batch["example_idx"] * md.content_tokens_per_example
+                + batch["token_idx"]
+            )
+        else:
+            batch_idx = batch["example_idx"]
+
+        distributions_nm[batch_idx[mask_b], :] = f_x[mask_b, : cfg.n_dists]
         mean_values_s += einops.reduce(f_x[mask_b], "batch d_sae -> d_sae", "sum")
         sparsity_s += einops.reduce((f_x[mask_b] > 0), "batch d_sae -> d_sae", "sum")
-
-        batch_idx = (
-            batch["example_idx"] * md.content_tokens_per_example + batch["token_idx"]
-        )
         # Assert that batch_idx[0].item() == prev_i + 1
         assert batch_idx[0].item() == prev_i + 1
         # Assert that batch_idx is is already sorted

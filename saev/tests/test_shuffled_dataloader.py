@@ -157,6 +157,68 @@ def test_missing_shard_file_detected_at_init():
             ShuffledDataLoader(cfg)
 
 
+@pytest.mark.slow
+def test_special_token_mode_yields_cls_only_batches():
+    with tmp_shards_root() as shards_root:
+        shards_dir = pytest.helpers.write_shards(
+            shards_root, data=datasets.FakeImg(n_examples=6), batch_size=2
+        )
+        md = saev.data.Metadata.load(shards_dir)
+        cfg = ShuffledConfig(
+            shards=shards_dir,
+            tokens="special",
+            layer=md.layers[0],
+            batch_size=3,
+            n_threads=1,
+            debug=True,
+            log_every_s=1.0,
+        )
+
+        dl = ShuffledDataLoader(cfg)
+        try:
+            assert dl.n_samples == md.n_examples
+            batch = next(iter(dl))
+            assert batch["act"].shape == (cfg.batch_size, md.d_model)
+            assert batch["example_idx"].shape == (cfg.batch_size,)
+            assert torch.all(batch["token_idx"] == -1)
+        finally:
+            dl.shutdown()
+
+
+@pytest.mark.slow
+def test_special_token_mode_requires_cls_token():
+    with tmp_shards_root() as shards_root:
+        shards_dir = pytest.helpers.write_shards(
+            shards_root,
+            data=datasets.FakeImg(n_examples=2),
+            cls_token=False,
+            batch_size=2,
+        )
+        md = saev.data.Metadata.load(shards_dir)
+        cfg = ShuffledConfig(shards=shards_dir, tokens="special", layer=md.layers[0])
+
+        with pytest.raises(ValueError, match="CLS token"):
+            ShuffledDataLoader(cfg)
+
+
+@pytest.mark.slow
+def test_special_token_mode_rejects_patch_label_filtering():
+    with tmp_shards_root() as shards_root:
+        shards_dir = pytest.helpers.write_shards(
+            shards_root, data=datasets.FakeImg(n_examples=2), batch_size=2
+        )
+        md = saev.data.Metadata.load(shards_dir)
+        cfg = ShuffledConfig(
+            shards=shards_dir,
+            tokens="special",
+            layer=md.layers[0],
+            ignore_labels=[0],
+        )
+
+        with pytest.raises(NotImplementedError, match="content"):
+            ShuffledDataLoader(cfg)
+
+
 def _token_coverage(batch, content_tokens_per_example: int) -> float:
     unique_tokens = torch.unique(batch["token_idx"]).numel()
     return unique_tokens / content_tokens_per_example

@@ -127,7 +127,7 @@ def test_shard_writer_and_dataset_e2e():
         )
         writer = ShardWriter(shards_root, md)
         dataset = IndexedDataset(
-            IndexedConfig(shards=shards_root / md.hash, patches="cls", layer=-1)
+            IndexedConfig(shards=shards_root / md.shard_id, patches="cls", layer=-1)
         )
 
         i = 0
@@ -156,6 +156,7 @@ def test_shards_json_is_emitted():
         shards = worker_fn(
             family="clip",
             ckpt="hf-hub:hf-internal-testing/tiny-open-clip-model",
+            tag=None,
             content_tokens_per_example=16,
             cls_token=True,
             d_model=128,
@@ -196,7 +197,7 @@ def test_metadata_json_has_required_keys(md):
         # Write metadata.json
         md.dump(shards_root)
 
-        md = json.loads((shards_root / md.hash / "metadata.json").read_text())
+        md = json.loads((shards_root / md.shard_id / "metadata.json").read_text())
         # required keys from the protocol
         expected = {
             "family",
@@ -210,6 +211,9 @@ def test_metadata_json_has_required_keys(md):
             "data",
             "dataset",
             "pixel_agg",
+            "tag",
+            "image_resize_mode",
+            "encoder_implementation",
             "dtype",
             "protocol",
         }
@@ -291,6 +295,7 @@ def test_tokens_per_ex(content_tokens_per_example, cls_token, expected):
 def test_metadata_smoke(md):
     """Test that all derived properties and methods on Metadata don't throw exceptions."""
     md.hash
+    md.shard_id
     md.tokens_per_example
     md.n_shards
     md.examples_per_shard

@@ -32,6 +32,17 @@ from . import datasets
 logger = logging.getLogger(__name__)
 
 
+def _validate_shard_tag(tag: str) -> str:
+    if not tag:
+        raise ValueError("shard tag must be non-empty")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if any(ch not in allowed for ch in tag):
+        raise ValueError(
+            "shard tag may only contain ASCII letters, digits, '.', '_' and '-'"
+        )
+    return tag
+
+
 class PixelAgg(enum.Enum):
     """How to aggregate pixel-level segmentation labels to token-level labels (only for image segmentation datasets)."""
 
@@ -70,6 +81,7 @@ class Metadata:
         "pe-core",
         "pe-spatial",
         "siglip",
+        "siglip2",
     ]
     ckpt: str
     layers: tuple[int, ...]
@@ -80,7 +92,10 @@ class Metadata:
     max_tokens_per_shard: int
     data: str
     dataset: pathlib.Path
+    image_resize_mode: tp.Literal["model_default", "square"] = "model_default"
+    encoder_implementation: str = "unspecified"
     pixel_agg: PixelAgg = PixelAgg.MAJORITY
+    tag: str | None = None
     dtype: tp.Literal["float32"] = "float32"
     protocol: tp.Literal["1.0.0", "1.1", "2.1"] = "2.1"
 
@@ -109,6 +124,8 @@ class Metadata:
         dct["layers"] = tuple(dct.pop("layers"))
         dct["dataset"] = pathlib.Path(dct["dataset"])
         dct["pixel_agg"] = PixelAgg(dct["pixel_agg"])
+        dct.setdefault("image_resize_mode", "model_default")
+        dct.setdefault("encoder_implementation", "unspecified")
         return cls(**dct)
 
     def dump(self, shards_root: pathlib.Path):
@@ -119,8 +136,8 @@ class Metadata:
             shards_root: Path to $SAEV_SCRATCH/saev/shards as described in [disk-layout.md](../../developers/disk-layout.md).
         """
         assert disk.is_shards_root(shards_root)
-        (shards_root / self.hash).mkdir(exist_ok=True)
-        with open(shards_root / self.hash / "metadata.json", "wb") as fd:
+        (shards_root / self.shard_id).mkdir(exist_ok=True)
+        with open(shards_root / self.shard_id / "metadata.json", "wb") as fd:
             helpers.jdump(self, fd, option=orjson.OPT_INDENT_2)
 
     @property
@@ -131,16 +148,29 @@ class Metadata:
         Returns:
             Hexadecimal hash string uniquely identifying this configuration.
         """
-        cfg_bytes = helpers.jdumps(self, option=orjson.OPT_SORT_KEYS)
+        payload = json.loads(helpers.jdumps(self))
+        if payload.get("tag") is None:
+            payload.pop("tag", None)
+        if payload.get("image_resize_mode") == "model_default":
+            payload.pop("image_resize_mode", None)
+        if payload.get("encoder_implementation") == "unspecified":
+            payload.pop("encoder_implementation", None)
+        cfg_bytes = helpers.jdumps(payload)
         return hashlib.sha256(cfg_bytes).hexdigest()[:8]
+
+    @property
+    def shard_id(self) -> str:
+        if self.tag:
+            return _validate_shard_tag(self.tag)
+        return self.hash
 
     @property
     def tokens_per_example(self) -> int:
         """
-        Total number of tokens per example including [CLS] token if present.
+        Total number of tokens per example including [CLS] if present.
 
         Returns:
-            Number of tokens plus one if [CLS] token is included.
+            Number of content tokens plus saved special tokens.
         """
         return self.content_tokens_per_example + int(self.cls_token)
 
@@ -209,7 +239,7 @@ class RecordedTransformer(torch.nn.Module):
     content_tokens_per_example: int
     cls_token: bool
     layers: Sequence[int]
-    token_i: slice
+    token_i: slice | Tensor
 
     _storage: Float[Tensor, "batch n_layers tokens_per_example dim"] | None
     _i: int
@@ -240,8 +270,14 @@ class RecordedTransformer(torch.nn.Module):
             self.model.get_residuals()[i].register_forward_hook(self.hook)
 
     def hook(
-        self, module, args: tuple, output: Float[Tensor, "batch n_layers dim"]
+        self, module, args: tuple, output: Float[Tensor, "batch n_layers dim"] | tuple
     ) -> None:
+        if isinstance(output, (tuple, list)):
+            if len(output) != 1:
+                raise ValueError(
+                    f"Expected one transformer token stream, got {len(output)}"
+                )
+            output = output[0]
         if self._storage is None:
             batch, _, dim = output.shape
             self._storage = self._empty_storage(batch, dim, output.device)
@@ -255,18 +291,18 @@ class RecordedTransformer(torch.nn.Module):
 
             self._storage = self._empty_storage(batch, dim, output.device)
 
-        # Select tokens based on cls_token setting
+        # Select tokens in storage order: optional CLS, then content tokens.
         selected_output = output[:, self.token_i, :]
         if (
             not self.cls_token
             and selected_output.shape[1] == self.content_tokens_per_example + 1
         ):
-            # Model has CLS token but we don't want to store it - skip first token
             selected_output = selected_output[:, 1:, :]
 
-        # Verify we're storing the right number of tokens (patches + cls if enabled)
+        # Verify we're storing the right number of tokens.
         assert selected_output.shape[1] == self.tokens_per_example, (
-            f"Shape mismatch: got {selected_output.shape[1]} tokens, expected {self.tokens_per_example} (content_tokens_per_example={self.content_tokens_per_example}, cls_token={self.cls_token})"
+            f"Shape mismatch: got {selected_output.shape[1]} tokens, expected {self.tokens_per_example} "
+            f"(content_tokens_per_example={self.content_tokens_per_example}, cls_token={self.cls_token})"
         )
 
         self._storage[:, self._i] = selected_output.detach()
@@ -399,7 +435,7 @@ class ShardWriter:
 
         self.logger = logging.getLogger("shard-writer")
 
-        self.shards_dir = shards_root / md.hash
+        self.shards_dir = shards_root / md.shard_id
         self.shards_dir.mkdir(exist_ok=True)
 
         # builder for shard manifest
@@ -699,8 +735,10 @@ def worker_fn(
     *,
     family: str,
     ckpt: str,
+    tag: str | None = None,
     content_tokens_per_example: int,
     cls_token: bool,
+    image_resize_mode: str = "model_default",
     d_model: int,
     layers: list[int],
     data: datasets.Config,
@@ -752,12 +790,31 @@ def worker_fn(
     assert shards_root.name == "shards"
 
     model_cls = models.load_model_cls(family)
-    model_instance = model_cls(ckpt).to(device)
+    model_instance = model_cls(ckpt).to(device).eval()
+    if cls_token and not bool(getattr(model_instance, "has_cls_token", True)):
+        raise ValueError(
+            f"Transformer family {family!r} does not expose a CLS token; "
+            "set cls_token=False"
+        )
     model = RecordedTransformer(
-        model_instance, content_tokens_per_example, cls_token, layers
+        model_instance,
+        content_tokens_per_example,
+        cls_token,
+        layers,
     )
 
-    data_tr, sample_tr = model_cls.make_transforms(ckpt, content_tokens_per_example)
+    if family in {"dinov3", "siglip2"}:
+        data_tr, sample_tr = model_cls.make_transforms(
+            ckpt,
+            content_tokens_per_example,
+            image_resize_mode=image_resize_mode,
+        )
+    else:
+        if image_resize_mode != "model_default":
+            raise ValueError(
+                f"image_resize_mode={image_resize_mode!r} is currently supported only for dinov3 shards"
+            )
+        data_tr, sample_tr = model_cls.make_transforms(ckpt, content_tokens_per_example)
 
     mask_tr = None
     if datasets.is_img_seg_dataset(data):
@@ -801,12 +858,17 @@ def worker_fn(
         layers=tuple(layers),
         content_tokens_per_example=content_tokens_per_example,
         cls_token=cls_token,
+        image_resize_mode=image_resize_mode,
+        encoder_implementation=str(
+            getattr(model_instance, "encoder_implementation", "unspecified")
+        ),
         d_model=d_model,
         n_examples=data.n_examples,
         max_tokens_per_shard=max_tokens_per_shard,
         data=base64.b64encode(pickle.dumps(data)).decode("utf8"),
         dataset=data.root,
         pixel_agg=pixel_agg,
+        tag=tag,
     )
     md.dump(shards_root)
 
@@ -847,7 +909,7 @@ def worker_fn(
 
                 i += len(cache)
 
-    return shards_root / md.hash
+    return shards_root / md.shard_id
 
 
 @beartype.beartype
@@ -968,7 +1030,7 @@ class Index:
     Attributes:
         idx: The index of the activation.
         example_idx: The index of the original example (image, audio clip etc).
-        content_token_idx: The token's index within an example's content. -1 for all special tokens.
+        content_token_idx: The token's index within an example's content. -1 for special tokens.
         shard_idx: The shard index.
         example_idx_in_shard: The example index along the examples axis in a shard.
         token_idx_in_shard: The token index along the tokens axis in a shard.
@@ -1026,10 +1088,10 @@ class IndexMap:
 
         match (self.tokens, self.layer):
             case ("special", int()):
-                # [CLS] tokens only right now
+                # [CLS] tokens only.
                 example_idx = idx
                 shard_idx = idx // self.md.examples_per_shard
-                example_idx_in_shard = idx // self.md.examples_per_shard
+                example_idx_in_shard = idx % self.md.examples_per_shard
                 return Index(
                     idx=idx,
                     example_idx=example_idx,
@@ -1054,7 +1116,7 @@ class IndexMap:
                     idx
                     % (self.md.examples_per_shard * self.md.content_tokens_per_example)
                     % self.md.content_tokens_per_example
-                    + self.md.cls_token
+                    + int(self.md.cls_token)
                 )
                 return Index(
                     idx=idx,

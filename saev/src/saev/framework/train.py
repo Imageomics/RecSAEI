@@ -47,6 +47,44 @@ logging.basicConfig(level=logging.INFO, format=log_format)
 logger = logging.getLogger("train")
 
 
+def _resolve_run_ids(cfgs: list["Config"], wandb_ids: list[str]) -> list[str]:
+    run_ids = [cfg.run_id or wandb_id for cfg, wandb_id in zip(cfgs, wandb_ids)]
+    if len(set(run_ids)) != len(run_ids):
+        raise ValueError(f"Run ids must be unique, got {run_ids}.")
+    return run_ids
+
+
+def _feature_stats_payload(metric: "EvalMetrics", d_sae: int) -> dict[str, object]:
+    dense_dims = torch.nonzero(
+        metric.freqs > metric.dense_threshold, as_tuple=False
+    ).reshape(-1)
+    dead_dims = torch.nonzero(metric.freqs == 0, as_tuple=False).reshape(-1)
+    almost_dead_dims = torch.nonzero(
+        metric.freqs < metric.almost_dead_threshold, as_tuple=False
+    ).reshape(-1)
+    return {
+        "dense_threshold": float(metric.dense_threshold),
+        "almost_dead_threshold": float(metric.almost_dead_threshold),
+        "n_dense": int(metric.n_dense),
+        "dense_dims": [int(dim) for dim in dense_dims.tolist()],
+        "n_dead": int(metric.n_dead),
+        "dead_dims": [int(dim) for dim in dead_dims.tolist()],
+        "n_almost_dead": int(metric.n_almost_dead),
+        "almost_dead_dims": [int(dim) for dim in almost_dead_dims.tolist()],
+        "d_sae": int(d_sae),
+        "eval_split": "val",
+    }
+
+
+def _dump_feature_stats(fpath: pathlib.Path, metric: "EvalMetrics", d_sae: int) -> None:
+    with open(fpath, "wb") as fd:
+        helpers.jdump(
+            _feature_stats_payload(metric, d_sae),
+            fd,
+            option=orjson.OPT_INDENT_2 | orjson.OPT_APPEND_NEWLINE,
+        )
+
+
 @beartype.beartype
 @dataclasses.dataclass(frozen=True, slots=True)
 class Config:
@@ -86,6 +124,8 @@ class Config:
     """Tags to add to WandB run."""
     log_every: int = 25
     """How often to log to WandB."""
+    run_id: str = ""
+    """Optional stable filesystem run id. Empty uses the WandB-generated id."""
     runs_root: pathlib.Path = pathlib.Path("$SAEV_NFS/saev/runs")
     """Root directory for runs."""
 
@@ -199,40 +239,49 @@ def worker_fn(cfgs: list[Config]) -> list[str]:
     eval_metrics = evaluate(cfgs, saes, objectives)
     metrics = [metric.for_wandb() for metric in eval_metrics]
     run.log(metrics, step=steps)
-    ids = run.finish()
+    wandb_ids = run.finish()
+    run_ids = _resolve_run_ids(cfgs, wandb_ids)
 
-    for cfg, id, metric, sae in zip(cfgs, ids, eval_metrics, saes):
+    for cfg, run_id, wandb_id, metric, sae in zip(cfgs, run_ids, wandb_ids, eval_metrics, saes):
         logger.info(
             "Checkpoint %s has %d dense features (%.1f)",
-            id,
+            run_id,
             metric.n_dense,
             metric.n_dense / sae.cfg.d_sae * 100,
         )
         logger.info(
             "Checkpoint %s has %d dead features (%.1f%%)",
-            id,
+            run_id,
             metric.n_dead,
             metric.n_dead / sae.cfg.d_sae * 100,
         )
         logger.info(
             "Checkpoint %s has %d *almost* dead (<1e-7) features (%.1f)",
-            id,
+            run_id,
             metric.n_almost_dead,
             metric.n_almost_dead / sae.cfg.d_sae * 100,
         )
 
         run = disk.Run.new(
-            id,
+            run_id,
             train_shards_dir=cfg.train_data.shards,
             val_shards_dir=cfg.val_data.shards,
             runs_root=cfg.runs_root,
         )
         nn.dump(run.ckpt, sae)
+        _dump_feature_stats(
+            run.run_dir / "checkpoint" / "feature_stats.json",
+            metric,
+            sae.cfg.d_sae,
+        )
         logger.info("Dumped checkpoint to '%s'.", run.ckpt)
         with open(run.run_dir / "checkpoint" / "config.json", "wb") as fd:
             helpers.jdump(cfg, fd, option=orjson.OPT_INDENT_2)
+        if wandb_id != run_id:
+            with open(run.run_dir / "checkpoint" / "wandb_id.txt", "w", encoding="utf-8") as fd:
+                fd.write(f"{wandb_id}\n")
 
-    return ids
+    return run_ids
 
 
 @beartype.beartype
@@ -368,11 +417,15 @@ def train(
                 dl_metrics = dl_monitor.compute(now=now)
 
                 metadata = dataloader.metadata
+                if cfg.train_data.tokens == "special":
+                    token_support = 1
+                else:
+                    token_support = metadata.content_tokens_per_example
                 entropy_metrics = statistics.calc_batch_entropy(
                     batch["example_idx"].to("cpu"),
                     batch["token_idx"].to("cpu"),
                     metadata.n_examples,
-                    metadata.content_tokens_per_example,
+                    token_support,
                 )
                 dl_metrics.update(entropy_metrics)
 

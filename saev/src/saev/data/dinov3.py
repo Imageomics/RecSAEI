@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import logging
 import math
 import pathlib
@@ -16,6 +17,38 @@ from torch import Tensor, nn
 from torchvision.transforms import v2
 
 from . import models, transforms
+
+DINOV3_HUB_REF = "facebookresearch/dinov3:94a96ac83c2446f15f9bdcfae23cad3c6a9d4988"
+OFFICIAL_ENCODER_IMPLEMENTATION = "meta-torchhub-dinov3-94a96ac83c2446f15f9bdcfae23cad3c6a9d4988-eval"
+
+
+def preprocess_raev2_tensor(
+    tensor: Tensor, *, image_size: int
+) -> Tensor:
+    """Apply the tensor portion of RAEv2's DINOv3 preprocessing on CPU or GPU."""
+    resize = v2.Resize(
+        (image_size, image_size),
+        interpolation=v2.InterpolationMode.BILINEAR,
+        antialias=True,
+    )
+    normalize = v2.Normalize(
+        mean=[0.4850, 0.4560, 0.4060],
+        std=[0.2290, 0.2240, 0.2250],
+    )
+    return normalize(resize(tensor))
+
+
+def image_to_float_tensor(image: Image.Image | Tensor) -> Tensor:
+    """Convert an RGB image to float32 with torchvision-v2 scaling semantics."""
+    return v2.ToDtype(torch.float32, scale=True)(v2.ToImage()(image))
+
+
+def make_raev2_transform(image_size: int) -> Callable:
+    """Build the exact CPU image transform shared by shards and live runtime."""
+    return v2.Compose([
+        image_to_float_tensor,
+        functools.partial(preprocess_raev2_tensor, image_size=image_size),
+    ])
 
 
 @beartype.beartype
@@ -612,11 +645,20 @@ def load(name: str, fpath: str | pathlib.Path, device="cpu") -> Encoder:
 class Vit(torch.nn.Module, models.Transformer):
     family: str = "dinov3"
     patch_size: int = 16
+    encoder_implementation: str = OFFICIAL_ENCODER_IMPLEMENTATION
 
     def __init__(self, ckpt: str):
         super().__init__()
         name = self._parse_name(ckpt)
-        self.model = load(name, ckpt)
+        self.model = torch.hub.load(
+            DINOV3_HUB_REF,
+            name,
+            source="github",
+            trust_repo=True,
+            skip_validation=True,
+            weights=ckpt,
+        )
+        self.eval()
 
         self._ckpt = name
         self.logger = logging.getLogger(f"dinov3/{name}")
@@ -628,8 +670,8 @@ class Vit(torch.nn.Module, models.Transformer):
     def get_residuals(self) -> list[torch.nn.Module]:
         return self.model.blocks
 
-    def get_token_i(self, content_tokens_per_example: int) -> slice:
-        n_reg = self.model.cfg.n_storage_tokens
+    def get_token_i(self, content_tokens_per_example: int) -> Tensor:
+        n_reg = int(getattr(self.model, "n_storage_tokens", self.model.storage_tokens.shape[1]))
         patches = torch.cat((
             torch.tensor([0]),  # CLS token
             torch.arange(n_reg + 1, n_reg + 1 + content_tokens_per_example),  # patches
@@ -644,31 +686,39 @@ class Vit(torch.nn.Module, models.Transformer):
         return "_".join(name)
 
     def forward(
-        self, batch: Float[Tensor, "batch n kernel"], **kwargs
+        self, batch: Float[Tensor, "batch channels height width"], **kwargs
     ) -> Float[Tensor, "batch patches dim"]:
-        grid = kwargs.pop("grid")
         if kwargs:
             self.logger.info("Unused kwargs: %s", kwargs)
-        dct = self.model(batch, grid=grid)
-
-        features = torch.cat((dct["cls"][:, None, :], dct["patches"]), axis=1)
+        dct = self.model.forward_features(batch)
+        features = torch.cat(
+            (dct["x_norm_clstoken"][:, None, :], dct["x_norm_patchtokens"]),
+            dim=1,
+        )
         return features
 
     @staticmethod
     def make_transforms(
-        ckpt: str, n_patches_per_img: int
+        ckpt: str,
+        n_patches_per_img: int,
+        *,
+        image_resize_mode: str = "model_default",
     ) -> tuple[Callable, Callable | None]:
         """Create transforms for preprocessing: (img_transform, sample_transform | None)."""
-        img_transform = v2.Compose([
-            transforms.FlexResize(patch_size=16, n_patches=n_patches_per_img),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.4850, 0.4560, 0.4060], std=[0.2290, 0.2240, 0.2250]),
-        ])
-        sample_transform = transforms.Patchify(
-            patch_size=16, n_patches=n_patches_per_img
-        )
-        return img_transform, sample_transform
+        if image_resize_mode == "model_default":
+            raise ValueError(
+                "The official DINOv3 extractor requires image_resize_mode='square' "
+                "so differently shaped images can be collated as BCHW tensors"
+            )
+        if image_resize_mode == "square":
+            side = math.isqrt(n_patches_per_img)
+            if side * side != n_patches_per_img:
+                raise ValueError(
+                    "square DINOv3 preprocessing requires a perfect-square content token count"
+                )
+            return make_raev2_transform(side * 16), None
+        else:
+            raise ValueError(f"Unknown DINOv3 image_resize_mode: {image_resize_mode}")
 
     @staticmethod
     def make_resize(

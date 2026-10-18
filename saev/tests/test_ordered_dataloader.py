@@ -72,6 +72,35 @@ def test_iter_smoke(ordered_cfg):
     assert batch["token_idx"].ndim == 1  # [batch]
 
 
+@pytest.mark.slow
+def test_special_token_mode_yields_one_cls_per_example():
+    with pytest.helpers.tmp_shards_root() as shards_root:
+        shards_dir = pytest.helpers.write_shards(
+            shards_root, data=datasets.FakeImg(n_examples=5), batch_size=2
+        )
+        md = Metadata.load(shards_dir)
+        cfg = OrderedConfig(
+            shards=shards_dir,
+            tokens="special",
+            layer=md.layers[0],
+            batch_size=2,
+        )
+
+        dl = OrderedDataLoader(cfg)
+        try:
+            assert dl.n_samples == md.n_examples
+            batches = list(dl)
+        finally:
+            dl.shutdown()
+
+        example_idx = torch.cat([batch["example_idx"] for batch in batches])
+        token_idx = torch.cat([batch["token_idx"] for batch in batches])
+        assert example_idx.tolist() == list(range(md.n_examples))
+        assert torch.all(token_idx == -1)
+        assert sum(batch["act"].shape[0] for batch in batches) == md.n_examples
+        assert all("token_labels" not in batch for batch in batches)
+
+
 def test_batches(ordered_cfg):
     """Test that we can iterate through multiple batches."""
     dl = OrderedDataLoader(ordered_cfg)

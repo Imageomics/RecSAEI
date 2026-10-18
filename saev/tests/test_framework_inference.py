@@ -34,13 +34,16 @@ def test_img_folder_inference():
             val_data=saev.data.ShuffledConfig(shards=shards_dir, layer=0),
             n_train=0,
             n_val=0,
+            run_id="stable-infer-run",
             runs_root=runs_root,
+            track=False,
             device="cpu",
             sae=saev.nn.SparseAutoencoderConfig(
                 d_model=md.d_model, d_sae=md.d_model * 8, reinit_blend=0.0
             ),
         )
         (run_id,) = saev.framework.train.worker_fn([train_cfg])
+        assert run_id == "stable-infer-run"
 
         inference_cfg = saev.framework.inference.Config(
             run=runs_root / run_id,
@@ -94,6 +97,58 @@ def test_img_folder_inference():
         assert metrics["normalized_mse"] == pytest.approx(
             metrics["sse_recon"] / metrics["sse_baseline"], rel=1e-6
         )
+
+
+def test_img_folder_special_token_inference():
+    """Tests inference.py metrics/artifacts for CLS-only token mode."""
+    with (
+        pytest.helpers.tmp_shards_root() as shards_root,
+        pytest.helpers.tmp_runs_root() as runs_root,
+    ):
+        shards_dir = pytest.helpers.write_shards(
+            shards_root, data=saev.data.datasets.FakeImg(n_examples=32)
+        )
+        pytest.helpers.make_cls_tokens_distinct(shards_dir)
+        md = saev.data.Metadata.load(shards_dir)
+
+        train_cfg = saev.framework.train.Config(
+            train_data=saev.data.ShuffledConfig(
+                shards=shards_dir, tokens="special", layer=0, batch_size=4
+            ),
+            val_data=saev.data.ShuffledConfig(
+                shards=shards_dir, tokens="special", layer=0, batch_size=4
+            ),
+            n_train=8,
+            n_val=8,
+            run_id="stable-special-infer-run",
+            runs_root=runs_root,
+            track=False,
+            device="cpu",
+            sae=saev.nn.SparseAutoencoderConfig(
+                d_model=md.d_model, d_sae=md.d_model * 8, reinit_blend=0.0
+            ),
+        )
+        (run_id,) = saev.framework.train.worker_fn([train_cfg])
+
+        inference_cfg = saev.framework.inference.Config(
+            run=runs_root / run_id,
+            data=saev.data.OrderedConfig(
+                shards=shards_dir, tokens="special", layer=0, batch_size=8
+            ),
+            device="cpu",
+        )
+        saev.framework.inference.worker_fn(inference_cfg)
+
+        run = saev.disk.Run(runs_root / run_id)
+        fpaths = saev.framework.inference.Filepaths.from_run(run, md)
+        for fpath in fpaths:
+            assert fpath.exists()
+            assert fpath.stat().st_size > 0
+
+        with open(fpaths.metrics) as fd:
+            metrics = json.load(fd)
+        assert metrics["n_tokens"] == md.n_examples
+        assert metrics["n_elements"] == md.n_examples * md.d_model
 
 
 def test_metrics_roundtrip():

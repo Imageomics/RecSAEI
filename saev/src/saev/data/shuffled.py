@@ -35,7 +35,7 @@ class Config:
 
     Attributes:
         shards: Directory with .bin shards and a metadata.json file.
-        tokens: Which subset of tokens to use. 'special' indicates the special tokens (if any). 'content' indicates it will return content tokens. 'all' returns all tokens.
+        tokens: Which subset of tokens to use. 'special' returns CLS tokens, 'content' returns content tokens, and 'all' returns all tokens.
     """
 
     shards: pathlib.Path = pathlib.Path("$SAEV_SCRATCH/saev/shards/abcdefg")
@@ -161,8 +161,10 @@ def _io_worker(
     shard_info = shards.ShardInfo.load(shards_path)
 
     # Pre-conditions
-    assert cfg.tokens == "content"
+    assert cfg.tokens in ("content", "special")
     assert isinstance(cfg.layer, int)
+    if cfg.tokens == "special":
+        assert md.cls_token
 
     # If we need to filter by labels, ensure we have the labels
     if cfg.ignore_labels and labels_mmap is None:
@@ -196,15 +198,34 @@ def _io_worker(
             )
             t2 = time.perf_counter()
 
-            # Only iterate over the actual number of examples in this shard
+            # Only iterate over the actual number of examples in this shard.
             for start, end in helpers.batched_idx(
                 shard_info[shard_i].n_examples, chunk_size
             ):
-                for t in range(md.content_tokens_per_example):
-                    token_idx = t + int(md.cls_token)
+                if cfg.tokens == "special":
+                    token_range = [-1]
+                else:
+                    token_range = range(md.content_tokens_per_example)
+                for t in token_range:
+                    if cfg.tokens == "special":
+                        token_idx = 0
+                        reported_token_idx = -1
+                    else:
+                        token_idx = (
+                            t + int(md.cls_token)
+                        )
+                        reported_token_idx = t
 
-                    # If filtering by labels, check which samples to keep
-                    if cfg.ignore_labels:
+                    if cfg.tokens == "special":
+                        t0 = time.perf_counter()
+                        acts = torch.from_numpy(mmap[start:end, layer_i, token_idx])
+                        t1 = time.perf_counter()
+
+                        meta = torch.full(
+                            (end - start, 2), reported_token_idx, dtype=torch.int32
+                        )
+                        meta[:, 0] = ex_i_offset + torch.arange(start, end)
+                    elif cfg.ignore_labels:
                         msg = "ignore_labels specified but no labels.bin found"
                         assert labels_mmap is not None, msg
                         # Get the labels for this batch of examples and patch
@@ -227,7 +248,11 @@ def _io_worker(
                         t1 = time.perf_counter()
 
                         # Create metadata for valid samples only
-                        meta = torch.full((len(valid_indices), 2), t, dtype=torch.int32)
+                        meta = torch.full(
+                            (len(valid_indices), 2),
+                            reported_token_idx,
+                            dtype=torch.int32,
+                        )
                         meta[:, 0] = (
                             ex_i_offset + start + torch.from_numpy(valid_indices)
                         )
@@ -237,7 +262,9 @@ def _io_worker(
                         acts = torch.from_numpy(mmap[start:end, layer_i, token_idx])
                         t1 = time.perf_counter()
 
-                        meta = torch.full((end - start, 2), t, dtype=torch.int32)
+                        meta = torch.full(
+                            (end - start, 2), reported_token_idx, dtype=torch.int32
+                        )
                         meta[:, 0] = ex_i_offset + torch.arange(start, end)
 
                     last_ex_i = meta[:, 0].max().item()
@@ -315,10 +342,16 @@ def _manager_main(
     )
 
     # 0. PRE-CONDITIONS
-    if cfg.tokens != "content" or not isinstance(cfg.layer, int):
+    if cfg.tokens not in ("content", "special") or not isinstance(cfg.layer, int):
         raise NotImplementedError(
-            "High-throughput loader only supports `content` and fixed `layer` mode for now."
+            "High-throughput loader only supports `content`/`special` and fixed `layer` mode for now."
         )
+    if cfg.tokens == "special" and not metadata.cls_token:
+        raise ValueError(
+            "Cannot load `special` tokens because shards do not include a CLS token."
+        )
+    if cfg.tokens == "special" and cfg.ignore_labels:
+        raise NotImplementedError("Patch label filtering only supports `content` tokens.")
 
     assert cfg.layer in metadata.layers, f"Layer {cfg.layer} not in {metadata.layers}"
 
@@ -415,6 +448,14 @@ class DataLoader:
             raise NotImplementedError("scale_norm not implemented.")
 
         self.metadata = shards.Metadata.load(self._shards_path)
+        if self.cfg.tokens == "special" and not self.metadata.cls_token:
+            raise ValueError(
+                "Cannot load `special` tokens because shards do not include a CLS token."
+            )
+        if self.cfg.tokens == "special" and self.cfg.ignore_labels:
+            raise NotImplementedError(
+                "Patch label filtering only supports `content` tokens."
+            )
 
         # Validate shard files exist and are non-empty
         shard_info = shards.ShardInfo.load(self._shards_path)
@@ -644,22 +685,17 @@ class DataLoader:
         # First calculate the maximum possible samples
         max_samples = 0
         match (self.cfg.tokens, self.cfg.layer):
-            case ("cls", "all"):
-                max_samples = self.metadata.n_examples * len(self.metadata.layers)
-            case ("cls", int()):
+            case ("special", int()):
                 max_samples = self.metadata.n_examples
             case ("content", int()):
                 max_samples = (
                     self.metadata.n_examples * self.metadata.content_tokens_per_example
                 )
-            case ("content", "all"):
-                max_samples = (
-                    self.metadata.n_examples
-                    * len(self.metadata.layers)
-                    * self.metadata.content_tokens_per_example
-                )
             case _:
-                tp.assert_never((self.cfg.tokens, self.cfg.layer))
+                raise NotImplementedError(
+                    "High-throughput loader only supports `content`/`special` and "
+                    "fixed `layer` mode for now."
+                )
 
         # If no filtering, return max samples
         if not self.cfg.ignore_labels:

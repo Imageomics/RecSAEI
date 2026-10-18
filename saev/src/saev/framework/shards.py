@@ -43,10 +43,13 @@ class Config:
         "pe-core",
         "pe-spatial",
         "siglip",
+        "siglip2",
     ] = "clip"
     """Which model family."""
     ckpt: str = "ViT-L-14/openai"
     """Specific model checkpoint."""
+    tag: str = ""
+    """Optional stable shard directory name. Empty uses the metadata hash."""
     batch_size: int = 1024
     """Batch size for ViT inference."""
     n_workers: int = 8
@@ -59,6 +62,8 @@ class Config:
     """Number of content tokens per example (depends on model)."""
     cls_token: bool = True
     """Whether the model has a [CLS] token."""
+    image_resize_mode: tp.Literal["model_default", "square"] = "model_default"
+    """Image geometry used before patchification. Square matches fixed-grid RAE encoders."""
     pixel_agg: tyro.conf.EnumChoicesFromValues[PixelAgg] = PixelAgg.MAJORITY
     max_tokens_per_shard: int = 2_400_000
     """Maximum number of activations per shard; 2.4M is approximately 10GB for 1024-dimensional 4-byte activations."""
@@ -102,8 +107,10 @@ def cli(cfg: tp.Annotated[Config, tyro.conf.arg(name="")]):
     kwargs = dict(
         family=cfg.family,
         ckpt=cfg.ckpt,
+        tag=cfg.tag or None,
         content_tokens_per_example=cfg.content_tokens_per_example,
         cls_token=cfg.cls_token,
+        image_resize_mode=cfg.image_resize_mode,
         d_model=cfg.d_model,
         layers=cfg.layers,
         data=cfg.data,

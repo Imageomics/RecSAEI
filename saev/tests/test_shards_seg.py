@@ -407,10 +407,10 @@ def _make_small_fishvista(
 def test_dinov3_fishvista_shards(
     fishvista_root: pathlib.Path, dinov3_ckpt: pathlib.Path, tmp_path: pathlib.Path
 ):
-    """Test that DINOv3 patchify works with FishVista segfolder dataset.
+    """Test official DINOv3 square extraction with the FishVista segfolder dataset.
 
     This is an integration test that verifies:
-    1. DINOv3's FlexResize and Patchify transforms work correctly
+    1. DINOv3's RAEv2 square preprocessing works correctly
     2. The shard generation pipeline handles ImgSegFolder properly
     3. labels.bin is generated with correct shape
 
@@ -425,7 +425,8 @@ def test_dinov3_fishvista_shards(
     with tmp_shards_root() as shards_root:
         shards_dir = worker_fn(
             family="dinov3",
-            ckpt=dinov3_ckpt,
+            ckpt=str(dinov3_ckpt),
+            image_resize_mode="square",
             content_tokens_per_example=256,  # 16x16 patches
             cls_token=False,
             d_model=384,  # ViT-S has 384 dim

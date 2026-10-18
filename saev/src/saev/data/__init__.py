@@ -2,7 +2,17 @@ import dataclasses
 
 import beartype
 
-from . import bird_mae, clip, dinov2, dinov3, fake_clip, models, pe, siglip
+from . import (
+    bird_mae,
+    clip,
+    dinov2,
+    dinov3,
+    fake_clip,
+    models,
+    pe,
+    siglip,
+    siglip2,
+)
 from .indexed import Config as IndexedConfig
 from .indexed import Dataset as IndexedDataset
 from .ordered import Config as OrderedConfig
@@ -24,6 +34,7 @@ __all__ = [
 ]
 
 models.register_family(siglip.Vit)
+models.register_family(siglip2.Vit)
 models.register_family(clip.Vit)
 models.register_family(dinov2.Vit)
 models.register_family(dinov3.Vit)

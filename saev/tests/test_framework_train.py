@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import pathlib
 
 import pytest
@@ -70,6 +71,12 @@ TRAIN_CONFIGS = {
         device="cpu",
         sae=saev.nn.SparseAutoencoderConfig(activation=TopK(top_k=8), reinit_blend=0.0),
     ),
+    "topk-adam-special": saev.framework.train.Config(
+        n_train=8,
+        n_val=8,
+        device="cpu",
+        sae=saev.nn.SparseAutoencoderConfig(activation=TopK(top_k=8), reinit_blend=0.0),
+    ),
     "batchtopk-adam": saev.framework.train.Config(
         n_train=40,
         n_val=40,
@@ -113,15 +120,21 @@ def test_train_and_eval(cfg_id: str):
             shards_root, data=saev.data.datasets.FakeImg(n_examples=64)
         )
         md = saev.data.Metadata.load(shards_dir)
+        tokens = "special" if cfg_id.endswith("-special") else "content"
+        if tokens == "special":
+            pytest.helpers.make_cls_tokens_distinct(shards_dir)
 
         # Patch runtime values into config
         cfg = dataclasses.replace(
             base_cfg,
             train_data=saev.data.ShuffledConfig(
-                shards=shards_dir, layer=0, batch_size=4
+                shards=shards_dir, tokens=tokens, layer=0, batch_size=4
             ),
-            val_data=saev.data.ShuffledConfig(shards=shards_dir, layer=0, batch_size=4),
+            val_data=saev.data.ShuffledConfig(
+                shards=shards_dir, tokens=tokens, layer=0, batch_size=4
+            ),
             runs_root=runs_root,
+            run_id="stable-train-run",
             track=False,
             sae=dataclasses.replace(
                 base_cfg.sae, d_model=md.d_model, d_sae=md.d_model * 4
@@ -129,10 +142,22 @@ def test_train_and_eval(cfg_id: str):
         )
         run_ids = saev.framework.train.worker_fn([cfg])
 
-        assert len(run_ids) == 1
-        run = saev.disk.Run(runs_root / run_ids[0])
+        assert run_ids == ["stable-train-run"]
+        run = saev.disk.Run(runs_root / "stable-train-run")
         assert run.ckpt.exists()
         assert run.ckpt.stat().st_size > 0
 
         sae = saev.nn.load(run.ckpt)
         assert sae.cfg.d_model == md.d_model
+        with open(run.run_dir / "checkpoint" / "config.json") as fd:
+            saved_cfg = json.load(fd)
+        assert saved_cfg["train_data"]["tokens"] == tokens
+        with open(run.run_dir / "checkpoint" / "feature_stats.json") as fd:
+            feature_stats = json.load(fd)
+        assert feature_stats["dense_threshold"] == 1e-2
+        assert feature_stats["almost_dead_threshold"] == 1e-7
+        assert feature_stats["d_sae"] == md.d_model * 4
+        assert feature_stats["eval_split"] == "val"
+        assert feature_stats["n_dense"] == len(feature_stats["dense_dims"])
+        assert feature_stats["n_dead"] == len(feature_stats["dead_dims"])
+        assert feature_stats["n_almost_dead"] == len(feature_stats["almost_dead_dims"])

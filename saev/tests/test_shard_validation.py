@@ -35,7 +35,7 @@ def make_shards_dir(tmp_path: pathlib.Path):
             dataset=data_cfg.root,
         )
         md.dump(shards_root_dpath)
-        shards_dir_dpath = shards_root_dpath / md.hash
+        shards_dir_dpath = shards_root_dpath / md.shard_id
 
         empty_shards_set = set(empty_shards or [])
         missing_shards_set = set(missing_shards or [])
