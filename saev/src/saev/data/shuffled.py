@@ -1,0 +1,699 @@
+# src/saev/data/shuffled.py
+# TODO: read https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html
+import collections.abc
+import concurrent.futures
+import dataclasses
+import logging
+import math
+import os
+import pathlib
+import queue
+import shutil
+import threading
+import time
+import traceback
+import typing as tp
+from multiprocessing.queues import Queue
+from multiprocessing.synchronize import Event
+
+import beartype
+import numpy as np
+import torch
+import torch.multiprocessing as mp
+from jaxtyping import Float, Int, jaxtyped
+from torch import Tensor
+
+from saev import helpers
+
+from . import buffers, shards
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """Configuration for loading shuffled activation data from disk.
+
+    Attributes:
+        shards: Directory with .bin shards and a metadata.json file.
+        tokens: Which subset of tokens to use. 'special' indicates the special tokens (if any). 'content' indicates it will return content tokens. 'all' returns all tokens.
+    """
+
+    shards: pathlib.Path = pathlib.Path("$SAEV_SCRATCH/saev/shards/abcdefg")
+    tokens: tp.Literal["special", "content", "all"] = "content"
+    layer: int | tp.Literal["all"] = -1
+    """Which transformer layer(s) to read from disk. `-1` is the default, but must be changed. `"all"` enumerates every recorded layer."""
+    batch_size: int = 1024 * 16
+    """Batch size."""
+    drop_last: bool = False
+    """Whether to drop the last batch if it's smaller than the others."""
+    scale_norm: bool = False
+    """Whether to scale norms to sqrt(D)."""
+    ignore_labels: list[int] = dataclasses.field(default_factory=list)
+    """If provided, exclude tokens with these label values. None means no filtering. Common use: ignore_labels=[0] to exclude background."""
+    # Performance
+    n_threads: int = 4
+    """Number of dataloading threads."""
+    buffer_size: int = 64
+    """Number of batches to queue in the shared-memory ring buffer. Higher values add latency but improve resilience to brief stalls."""
+    min_buffer_fill: float = 0.0
+    """Fraction of the reservoir that must be populated before yielding batches."""
+    batch_timeout_s: float = 30.0
+    """How long to wait for at least one batch."""
+    # Diagnostics
+    seed: int = 17
+    """Random seed."""
+    debug: bool = False
+    """Whether the dataloader process should log debug messages."""
+    log_every_s: float = 30.0
+    """How frequently the dataloader process should log (debug) performance messages."""
+    use_tmpdir: bool = False
+    """If True and $TMPDIR is set, copy shards to local storage before training to avoid Infiniband congestion."""
+
+
+@beartype.beartype
+def _copy_shards_to_tmpdir(
+    src_dpath: pathlib.Path, logger: logging.Logger
+) -> pathlib.Path:
+    """Copy shard directory to $TMPDIR for local I/O. Returns new path."""
+    tmpdir = os.environ.get("TMPDIR")
+    if not tmpdir:
+        logger.warning("use_tmpdir=True but $TMPDIR not set; using original path")
+        return src_dpath
+
+    # Use job ID prefix to avoid clobbering between array jobs on same node
+    # Path must end in saev/shards/<hash> for is_shards_dir() validation
+    job_id = os.environ.get("SLURM_JOB_ID", "nojob")
+    dst_dpath = pathlib.Path(tmpdir) / job_id / "saev" / "shards" / src_dpath.name
+
+    # Check if already copied (for train/val reuse)
+    marker = dst_dpath / ".copy_complete"
+    if marker.exists():
+        logger.info(f"Reusing existing TMPDIR copy: {dst_dpath}")
+        return dst_dpath
+
+    # Create destination directory
+    dst_dpath.mkdir(parents=True, exist_ok=True)
+
+    # Get list of files to copy
+    files = [f for f in src_dpath.iterdir() if f.is_file()]
+    total_size = sum(f.stat().st_size for f in files)
+    logger.info(
+        f"Copying {len(files)} files ({total_size / 1e9:.1f} GB) to TMPDIR: {dst_dpath}"
+    )
+
+    # Copy files in parallel
+    def copy_file(src: pathlib.Path) -> None:
+        dst = dst_dpath / src.name
+        shutil.copy2(src, dst)
+
+    n_workers = min(8, len(files))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+        list(pool.map(copy_file, files))
+
+    # Write marker to indicate copy is complete
+    marker.touch()
+    logger.info(f"Finished copying shards to {dst_dpath}")
+
+    return dst_dpath
+
+
+@beartype.beartype
+class ExampleOutOfBoundsError(Exception):
+    def __init__(self, metadata: shards.Metadata, i: int):
+        self.metadata = metadata
+        self.i = i
+
+    @property
+    def message(self) -> str:
+        return f"Metadata says there are {self.metadata.n_examples} examples, but we found example {self.i}."
+
+
+@jaxtyped(typechecker=beartype.beartype)
+def _io_worker(
+    worker_id: int,
+    cfg: Config,
+    md: shards.Metadata,
+    shards_path: pathlib.Path,
+    work_queue: queue.Queue[int | None],
+    reservoir: buffers.ReservoirBuffer,
+    stop_event: threading.Event,
+    err_queue: Queue[tuple[str, str]],
+    labels_mmap: np.memmap | None = None,
+):
+    """
+    Pulls work items from the queue, loads data, and pushes it to the ready queue.
+    Work item is a tuple: (shard_idx, list_of_global_indices).
+
+    See https://github.com/beartype/beartype/issues/397 for an explanation of why we use multiprocessing.queues.Queue for the type hint.
+    """
+    log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+    level = logging.DEBUG if cfg.debug else logging.INFO
+    logging.basicConfig(level=level, format=log_format, force=True)
+    logger = logging.getLogger(f"shuffled.worker{worker_id}")
+    logger.info(
+        "I/O worker %s started (debug=%s, logging=%s).",
+        worker_id,
+        cfg.debug,
+        logging.getLevelName(logger.getEffectiveLevel()),
+    )
+
+    layer_i = md.layers.index(cfg.layer)
+    shard_info = shards.ShardInfo.load(shards_path)
+
+    # Pre-conditions
+    assert cfg.tokens == "content"
+    assert isinstance(cfg.layer, int)
+
+    # If we need to filter by labels, ensure we have the labels
+    if cfg.ignore_labels and labels_mmap is None:
+        raise ValueError("ignore_labels specified but no labels.bin found")
+
+    bytes_sent = 0
+    n_reads = 0
+    t_last_report = time.time()
+
+    chunk_size = min(1024, math.ceil(cfg.batch_size * cfg.buffer_size / cfg.n_threads))
+
+    reason = ""
+
+    while not stop_event.is_set():
+        try:
+            shard_i = work_queue.get(timeout=0.1)
+            if shard_i is None:  # Poison pill
+                logger.debug("Got 'None' from work_queue; exiting.")
+                reason = "poison_pill"
+                break
+            t1 = time.perf_counter()
+
+            fname = f"acts{shard_i:06}.bin"
+            logger.info("Opening %s.", fname)
+
+            ex_i_offset = shard_i * md.examples_per_shard
+
+            acts_fpath = shards_path / fname
+            mmap = np.memmap(
+                acts_fpath, mode="r", dtype=np.float32, shape=md.shard_shape
+            )
+            t2 = time.perf_counter()
+
+            # Only iterate over the actual number of examples in this shard
+            for start, end in helpers.batched_idx(
+                shard_info[shard_i].n_examples, chunk_size
+            ):
+                for t in range(md.content_tokens_per_example):
+                    token_idx = t + int(md.cls_token)
+
+                    # If filtering by labels, check which samples to keep
+                    if cfg.ignore_labels:
+                        msg = "ignore_labels specified but no labels.bin found"
+                        assert labels_mmap is not None, msg
+                        # Get the labels for this batch of examples and patch
+                        ex_indices = np.arange(ex_i_offset + start, ex_i_offset + end)
+                        patch_labels = labels_mmap[ex_indices, t]
+
+                        # Find which samples to keep (NOT in ignore list)
+                        mask = ~np.isin(patch_labels, cfg.ignore_labels)
+                        valid_indices = np.where(mask)[0]
+
+                        # Skip this batch if no samples match
+                        if len(valid_indices) == 0:
+                            continue
+
+                        # Only load the matching activations
+                        t0 = time.perf_counter()
+                        acts = torch.from_numpy(
+                            mmap[start + valid_indices, layer_i, token_idx]
+                        )
+                        t1 = time.perf_counter()
+
+                        # Create metadata for valid samples only
+                        meta = torch.full((len(valid_indices), 2), t, dtype=torch.int32)
+                        meta[:, 0] = (
+                            ex_i_offset + start + torch.from_numpy(valid_indices)
+                        )
+                    else:
+                        # No filtering, load all
+                        t0 = time.perf_counter()
+                        acts = torch.from_numpy(mmap[start:end, layer_i, token_idx])
+                        t1 = time.perf_counter()
+
+                        meta = torch.full((end - start, 2), t, dtype=torch.int32)
+                        meta[:, 0] = ex_i_offset + torch.arange(start, end)
+
+                    last_ex_i = meta[:, 0].max().item()
+                    if last_ex_i >= md.n_examples:
+                        err = ExampleOutOfBoundsError(md, last_ex_i)
+                        logger.warning(err.message)
+                        raise err
+
+                    fill_before = reservoir.fill()
+                    reservoir.put(acts, meta)
+                    t2 = time.perf_counter()
+                    fill_after = reservoir.fill()
+
+                    n_reads += 1
+                    bytes_sent += (
+                        acts.numel() * acts.element_size()
+                        + meta.numel() * meta.element_size()
+                    )
+
+                    now = time.time()
+                    if now - t_last_report >= cfg.log_every_s:
+                        logger.debug(
+                            "shard=%s mb_sent=%.1f read_ms=%.2f put_ms=%.2f fill-before=%.3f fill-after=%.3f",
+                            shard_i,
+                            bytes_sent / 1e6,
+                            (t1 - t0) * 1e3,
+                            (t2 - t1) * 1e3,
+                            fill_before,
+                            fill_after,
+                        )
+                        t_last_report = now
+        except queue.Empty:
+            # Wait 0.1 seconds for new data.
+            time.sleep(0.1)
+            if stop_event.is_set():
+                reason = "stop_event_set"
+                break
+            continue
+        except Exception as err:
+            logger.exception("Error in worker.")
+            err_queue.put((f"worker{worker_id}", traceback.format_exc()))
+            reason = f"exception:{type(err).__name__}"
+            break
+
+    if reason is None:
+        reason = "stop_event_set" if stop_event.is_set() else "loop_exhausted"
+
+    mb_sent = bytes_sent / 1e6
+    logger.info(
+        "Worker finished (%s). bytes_sent=%.1fMB n_reads=%d", reason, mb_sent, n_reads
+    )
+
+
+@beartype.beartype
+def _manager_main(
+    cfg: Config,
+    metadata: shards.Metadata,
+    shards_path: pathlib.Path,
+    reservoir: buffers.ReservoirBuffer,
+    stop_event: Event,
+    err_queue: Queue[tuple[str, str]],
+    labels_mmap: np.memmap | None = None,
+):
+    """
+    The main function for the data loader manager process.
+    """
+    log_format = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+    level = logging.DEBUG if cfg.debug else logging.INFO
+    logging.basicConfig(level=level, format=log_format, force=True)
+    logger = logging.getLogger("shuffled.manager")
+    logger.info(
+        "Manager process started (debug=%s, logging=%s)",
+        cfg.debug,
+        logging.getLevelName(logger.getEffectiveLevel()),
+    )
+
+    # 0. PRE-CONDITIONS
+    if cfg.tokens != "content" or not isinstance(cfg.layer, int):
+        raise NotImplementedError(
+            "High-throughput loader only supports `content` and fixed `layer` mode for now."
+        )
+
+    assert cfg.layer in metadata.layers, f"Layer {cfg.layer} not in {metadata.layers}"
+
+    # 1. GLOBAL SHUFFLE
+    logger.info("Shuffling shards.")
+    rng = np.random.default_rng(cfg.seed)
+    work_items = rng.permutation(metadata.n_shards)
+    logger.info("First 10 shards: %s", work_items[:10])
+
+    try:
+        # 2. SETUP WORK QUEUE & I/O THREADS
+        work_queue = queue.Queue()
+
+        for shard_i in work_items:
+            work_queue.put(shard_i)
+
+        # Stop objects.
+        for _ in range(cfg.n_threads):
+            work_queue.put(None)
+
+        threads = []
+        thread_stop_event = threading.Event()
+        for i in range(cfg.n_threads):
+            args = (
+                i,
+                cfg,
+                metadata,
+                shards_path,
+                work_queue,
+                reservoir,
+                thread_stop_event,
+                err_queue,
+                labels_mmap,
+            )
+            thread = threading.Thread(target=_io_worker, args=args, daemon=True)
+            thread.start()
+            threads.append(thread)
+        logger.info("Launched %d I/O threads.", cfg.n_threads)
+
+        # 4. WAIT
+        while any(t.is_alive() for t in threads):
+            time.sleep(1.0)
+
+    except Exception:
+        logger.exception("Fatal error in manager process")
+        err_queue.put(("manager", traceback.format_exc()))
+    finally:
+        # 5. CLEANUP
+        logger.info("Manager process shutting down...")
+        thread_stop_event.set()
+        while not work_queue.empty():
+            work_queue.get_nowait()
+        for t in threads:
+            t.join(timeout=10.0)
+        logger.info("Manager process finished.")
+
+
+@beartype.beartype
+class DataLoader:
+    """
+    High-throughput streaming loader that deterministically shuffles data from disk shards.
+    """
+
+    @jaxtyped(typechecker=beartype.beartype)
+    class ExampleBatch(tp.TypedDict):
+        """Individual example."""
+
+        act: Float[Tensor, "batch d_model"]
+        example_idx: Int[Tensor, " batch"]
+        token_idx: Int[Tensor, " batch"]
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+
+        self.manager_proc = None
+        self.reservoir = None
+        self.stop_event = None
+        self._last_reservoir_fill: float | None = None
+        self._logged_effective_capacity = False
+
+        self.logger = logging.getLogger("shuffled.DataLoader")
+        self.ctx = mp.get_context()
+
+        if not os.path.isdir(self.cfg.shards):
+            raise RuntimeError(f"Activations are not saved at '{self.cfg.shards}'.")
+
+        # Copy to TMPDIR if requested, otherwise use original path
+        if self.cfg.use_tmpdir:
+            self._shards_path = _copy_shards_to_tmpdir(self.cfg.shards, self.logger)
+        else:
+            self._shards_path = self.cfg.shards
+
+        if self.cfg.scale_norm:
+            raise NotImplementedError("scale_norm not implemented.")
+
+        self.metadata = shards.Metadata.load(self._shards_path)
+
+        # Validate shard files exist and are non-empty
+        shard_info = shards.ShardInfo.load(self._shards_path)
+        shard_info.validate(self._shards_path)
+
+        self._n_samples = self._calculate_n_samples()
+
+        # Check if labels.bin exists for filtering
+        self.labels_mmap = None
+        if self.cfg.ignore_labels:
+            labels_path = os.path.join(self._shards_path, "labels.bin")
+            if not os.path.exists(labels_path):
+                raise FileNotFoundError(
+                    f"ignore_labels filtering requested but labels.bin not found at {labels_path}"
+                )
+            # We'll create the memmap when starting the manager process
+
+    @property
+    def n_batches(self) -> int:
+        return len(self)
+
+    @property
+    def n_samples(self) -> int:
+        return self._n_samples
+
+    @property
+    def batch_size(self) -> int:
+        return self.cfg.batch_size
+
+    @property
+    def drop_last(self) -> int:
+        return self.cfg.drop_last
+
+    @property
+    def manager_pid(self) -> int:
+        if not self.manager_proc or not self.manager_proc.is_alive():
+            return -1
+
+        return self.manager_proc.pid
+
+    def _start_manager(self):
+        if self.manager_proc and self.manager_proc.is_alive():
+            return
+
+        self.logger.info("Starting manager process.")
+
+        # Create the shared-memory buffers
+        self.reservoir = buffers.ReservoirBuffer(
+            self.cfg.buffer_size * self.cfg.batch_size,
+            (self.metadata.d_model,),
+            dtype=torch.float32,
+            meta_shape=(2,),
+            meta_dtype=torch.int32,
+            seed=self.cfg.seed,
+            collate_fn=torch.utils.data.default_collate,
+        )
+        self.stop_event = self.ctx.Event()
+        self.err_queue = self.ctx.Queue(maxsize=self.cfg.n_threads + 1)
+
+        # Create labels memmap if needed
+        labels_mmap = None
+        if self.cfg.ignore_labels:
+            labels_path = self._shards_path / "labels.bin"
+            labels_mmap = np.memmap(
+                labels_path,
+                mode="r",
+                dtype=np.uint8,
+                shape=(
+                    self.metadata.n_examples,
+                    self.metadata.content_tokens_per_example,
+                ),
+            )
+
+        self.manager_proc = self.ctx.Process(
+            target=_manager_main,
+            args=(
+                self.cfg,
+                self.metadata,
+                self._shards_path,
+                self.reservoir,
+                self.stop_event,
+                self.err_queue,
+                labels_mmap,
+            ),
+            daemon=True,
+        )
+        self.manager_proc.start()
+
+    def __iter__(self) -> collections.abc.Iterator[ExampleBatch]:
+        """Yields batches."""
+        self._start_manager()
+        n, b = 0, 0
+
+        try:
+            while n < self.n_samples:
+                need = min(self.cfg.batch_size, self.n_samples - n)
+                remaining_samples = self.n_samples - n
+                self._wait_for_min_buffer_fill(remaining_samples)
+                if not self.err_queue.empty():
+                    who, tb = self.err_queue.get_nowait()
+                    raise RuntimeError(f"{who} crashed:\n{tb}")
+
+                try:
+                    act, meta = self.reservoir.get(
+                        need, timeout=self.cfg.batch_timeout_s
+                    )
+                    n += need
+                    b += 1
+                    example_idx, token_idx = meta.T
+                    yield self.ExampleBatch(
+                        act=act, example_idx=example_idx, token_idx=token_idx
+                    )
+                    continue
+                except TimeoutError:
+                    if self.cfg.ignore_labels:
+                        self.logger.info(
+                            "Did not get a batch from %d worker threads in %.1fs seconds. This can happen when filtering out many labels.",
+                            self.cfg.n_threads,
+                            self.cfg.batch_timeout_s,
+                        )
+                    else:
+                        self.logger.info(
+                            "Did not get a batch from %d worker threads in %.1fs seconds.",
+                            self.cfg.n_threads,
+                            self.cfg.batch_timeout_s,
+                        )
+
+                # If we don't continue, then we should check on the manager process.
+                if not self.manager_proc.is_alive():
+                    raise RuntimeError(
+                        f"Manager process died unexpectedly after {b}/{len(self)} batches."
+                    )
+
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        if (
+            hasattr(self, "stop_event")
+            and self.stop_event
+            and not self.stop_event.is_set()
+        ):
+            self.stop_event.set()
+
+        if (
+            hasattr(self, "manager_proc")
+            and self.manager_proc
+            and self.manager_proc.is_alive()
+        ):
+            self.manager_proc.join(timeout=5.0)
+            if self.manager_proc.is_alive():
+                self.logger.warning(
+                    "Manager process did not shut down cleanly, killing."
+                )
+                self.manager_proc.kill()
+
+        if hasattr(self, "reservoir") and self.reservoir:
+            self.reservoir.close()
+
+        self.manager_proc = None
+        self.reservoir = None
+        self.stop_event = None
+        self._last_reservoir_fill = None
+        self._logged_effective_capacity = False
+
+    def __del__(self):
+        self.shutdown()
+
+    def _wait_for_min_buffer_fill(
+        self, remaining: int, *, poll_interval_s: float = 0.1
+    ) -> None:
+        if self.cfg.min_buffer_fill <= 0.0:
+            self._last_reservoir_fill = None
+            return
+        if not self.reservoir:
+            self._last_reservoir_fill = None
+            return
+
+        err_queue = getattr(self, "err_queue", None)
+        if remaining <= 0:
+            self._last_reservoir_fill = None
+            return
+
+        effective_capacity = min(self.reservoir.capacity, remaining)
+        if effective_capacity <= 0:
+            self._last_reservoir_fill = None
+            return
+
+        if not self._logged_effective_capacity and self.reservoir.capacity > remaining:
+            self.logger.debug(
+                "Reservoir capacity (%d) exceeds remaining samples (%d); using %d slots for warmup.",
+                self.reservoir.capacity,
+                remaining,
+                effective_capacity,
+            )
+            self._logged_effective_capacity = True
+
+        while True:
+            if err_queue and not err_queue.empty():
+                who, tb = err_queue.get_nowait()
+                raise RuntimeError(f"{who} crashed:\n{tb}")
+
+            qsize = self.reservoir.qsize()
+            fill_fraction = qsize / effective_capacity
+            if fill_fraction >= self.cfg.min_buffer_fill:
+                self._last_reservoir_fill = fill_fraction
+                return
+
+            manager_dead = not self.manager_proc or not self.manager_proc.is_alive()
+            if manager_dead:
+                if qsize > 0:
+                    self._last_reservoir_fill = fill_fraction
+                    return
+
+                raise RuntimeError(
+                    "Manager process died while waiting for reservoir fill."
+                )
+
+            time.sleep(poll_interval_s)
+
+    def _calculate_n_samples(self) -> int:
+        """Helper to calculate total number of examples based on config.
+
+        When ignore_labels is specified, this counts the actual number of patches
+        that remain after filtering out the ignored labels.
+        """
+        # First calculate the maximum possible samples
+        max_samples = 0
+        match (self.cfg.tokens, self.cfg.layer):
+            case ("cls", "all"):
+                max_samples = self.metadata.n_examples * len(self.metadata.layers)
+            case ("cls", int()):
+                max_samples = self.metadata.n_examples
+            case ("content", int()):
+                max_samples = (
+                    self.metadata.n_examples * self.metadata.content_tokens_per_example
+                )
+            case ("content", "all"):
+                max_samples = (
+                    self.metadata.n_examples
+                    * len(self.metadata.layers)
+                    * self.metadata.content_tokens_per_example
+                )
+            case _:
+                tp.assert_never((self.cfg.tokens, self.cfg.layer))
+
+        # If no filtering, return max samples
+        if not self.cfg.ignore_labels:
+            return max_samples
+
+        # For patch filtering, count actual remaining tokens
+        # Note: This only works for "content" tokens with fixed layer
+        if self.cfg.tokens != "content" or not isinstance(self.cfg.layer, int):
+            raise NotImplementedError(
+                "Patch label filtering only supports 'content' patches with fixed layer"
+            )
+
+        # Load labels and count remaining patches
+        labels_path = self._shards_path / "labels.bin"
+        if not labels_path.exists():
+            raise FileNotFoundError(f"labels.bin not found at {labels_path}")
+
+        # Memory-map the labels file
+        labels = np.memmap(
+            labels_path,
+            mode="r",
+            dtype=np.uint8,
+            shape=(self.metadata.n_examples, self.metadata.content_tokens_per_example),
+        )
+
+        # Count patches that are NOT in the ignore list
+        mask = ~np.isin(labels, self.cfg.ignore_labels)
+        n_remaining = int(np.sum(mask))
+
+        # Clean up the memmap
+        del labels
+
+        return n_remaining
+
+    def __len__(self) -> int:
+        """Returns the number of batches in an epoch."""
+        return math.ceil(self.n_samples / self.cfg.batch_size)

@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+.ipynb_checkpoints/
+.venv/
+*.egg-info/
+
+artifacts/
+logs/
+.aider*
+.wandb/
+.env
+.DS_Store
+tmp/
+elm-stuff/
+
+# Testing
+.coverage
+.coverage.*
+coverage.json
+
+.hypothesis/
+
+pytest.json
+
+# Credentials
+r2-credentials
+
+# Presentations (opaque binaries, not diffable)
+docs/internal/presentations/
+
+# Paper assets (figures, social media, videos -- regenerable or too large)
+contrib/*/docs/papers/*/figures/
+contrib/*/docs/papers/*/*/figures/
+contrib/*/docs/papers/*/social/
+contrib/*/docs/papers/*/*/social/
+
+# Design source files (OmniGraffle, iDraw, Keynote)
+*.graffle
+*.idraw
+*.pages
+
+# LaTeX
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+*.bcf
+*.run.xml
+*-blx.bib
+*.brf
