@@ -36,6 +36,16 @@ layer="${LAYER:-$layer}"
 prefix="$dataset-raev2-dinov3-l-i256"
 train_tag="$prefix-train-l$layer-$token_mode-t256"
 val_tag="$prefix-val-l$layer-$token_mode-t256"
+train_shards="$shards_root/$train_tag"
+if [[ "$token_mode" == content ]]; then
+  shuffle_seed="${SHUFFLE_SEED:-42}"
+  shuffled_tag="${SHUFFLED_TRAIN_TAG:-$train_tag-shuffled-s$shuffle_seed}"
+  train_shards="$shards_root/$shuffled_tag"
+  if [[ ! -f "$train_shards/token_shuffle.json" ]]; then
+    echo "Missing shuffled training shards. Run scripts/sae/shuffle.sh first: $train_shards" >&2
+    exit 1
+  fi
+fi
 
 # Budgets count patch tokens for content, image tokens for CLS.
 d_model=1024
@@ -71,7 +81,7 @@ cmd=(
   --n-train "$n_train"
   --n-val "$n_val"
   --device cuda --no-track
-  --train-data.shards "$shards_root/$train_tag"
+  --train-data.shards "$train_shards"
   --train-data.layer "$layer"
   --train-data.tokens "$saev_tokens"
   --train-data.batch-size "$train_batch_size"
