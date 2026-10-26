@@ -1,8 +1,23 @@
 # RecSAEI
 
-## Prerequisites
+RecSAEI is a research toolkit for interpreting vision representations with sparse
+autoencoders (SAEs) and visualizing their effects through image reconstruction.
+Researchers can inspect a feature, change its activation, and compare the
+resulting image with the original and an unedited reconstruction.
 
-From the repository root, install the environment with `uv sync`.
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| `core/data/` | Dataset staging and token shuffling. |
+| `core/selection/` | Dimension selection for feature interventions. |
+| `core/intervention/` | RAEv2 backend and patch/CLS feature interventions. |
+| `visualization/` | Viewer export, API, live runtime, and browser interface. |
+| `scripts/data/`, `scripts/sae/`, `scripts/visualization/` | Workflow entry points and viewer configuration. |
+| `tests/` | Checks for the local workflows and intervention behavior. |
+| `saev/`, `RAEv2/` | Bundled dependencies; see their respective licenses. |
+
+## Prerequisites
 
 Prepare the required encoder and RAE decoder weights from
 `nyu-visionx/RAEv2-models`. For example, download DINOv3-L and its k1 decoder:
@@ -46,3 +61,34 @@ The viewer binds to `0.0.0.0:8000`; open `http://<server-hostname>:8000`.
 Add patch/CLS inference sources as needed;
 class selection uses the optional training `fit` source. Omit `runtime` for
 browsing only. Exports reference the staged images, which must remain accessible.
+
+## Citation
+
+If you use RecSAEI in your research, please cite our forthcoming arXiv preprint.
+The entry below is a template: replace the provisional title, `YEAR`, and
+`ARXIV_ID` once the preprint is available. Author order is shown as intended for
+the paper.
+
+```bibtex
+@article{gu2026recsaei,
+  title         = {From Activation to Intervention: Interpreting Sparse Visual Features through Reconstruction},
+  author        = {Gu, Jianyang and Beattie, Jacob and Khurana, Mridul and
+                   Chae, Julia and Xiao, Xi and Zhang, Cheng and
+                   Karpatne, Anuj and Chao, Wei-Lun and Beery, Sara and
+                   Berger-Wolf, Tanya},
+  journal       = {arXiv preprint arXiv:ARXIV_ID},
+  year          = {YEAR},
+  eprint        = {ARXIV_ID},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  url           = {https://arxiv.org/abs/ARXIV_ID}
+}
+```
+
+## Acknowledgments
+
+This repository builds on [saev](https://github.com/Imageomics/saev) and
+[RAEv2](https://github.com/nanovisionx/RAEv2). Please also credit these projects
+when using their software or methods. Their upstream citation sources are
+[saev's citation metadata](https://github.com/Imageomics/saev/blob/main/CITATION.cff)
+and the [RAEv2 paper](https://arxiv.org/abs/2605.18324).

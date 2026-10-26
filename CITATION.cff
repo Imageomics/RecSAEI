@@ -1,0 +1,117 @@
+# RecSAEI citation draft. No preprint has been identified in this template.
+# TODO: Replace the provisional paper title and add year, arXiv URL, and DOI
+# under preferred-citation once the preprint is available.
+cff-version: 1.2.0
+message: >-
+  If you use RecSAEI, please cite the associated paper once its arXiv details
+  are available. The preferred citation is currently a preprint template.
+type: software
+title: RecSAEI
+abstract: >-
+  Sparse autoencoders (SAEs) decompose visual representations into individual features,
+  offering a promising basis for explaining model behavior. Interpreting these features
+  typically relies on images or pixel regions that most strongly activate them.
+  However, this evidence becomes ambiguous when multiple features with different
+  semantics are frequently activated in the same locations, such as texture and
+  color of the same patterns. We propose Reconstructive SAE Intervention (ResSAEI),
+  a framework that shifts feature explanation from passive observation to active visual
+  reconstruction. By intervening on representations along SAE decoder directions and
+  reconstructing the visual output, we provide direct evidence of a feature's semantic
+  meaning. We demonstrate that our method successfully disambiguates feature meanings
+  across multiple datasets and vision encoders. Furthermore, our framework grounds
+  [CLS] SAE interventions in a sparse set of patch SAE decoder directions.
+  Beyond stable target response, this attribution also exposes the compositional
+  relationship between elementary visual patterns and high-level semantics.
+  Our results advocate for intervention reconstruction as an essential complementary
+  signal for explaining neural networks.
+authors:
+  - family-names: Gu
+    given-names: Jianyang
+  - family-names: Beattie
+    given-names: Jacob
+  - family-names: Khurana
+    given-names: Mridul
+  - family-names: Chae
+    given-names: Julia
+  - family-names: Xiao
+    given-names: Xi
+  - family-names: Zhang
+    given-names: Cheng
+  - family-names: Karpatne
+    given-names: Anuj
+  - family-names: Chao
+    given-names: Wei-Lun
+  - family-names: Beery
+    given-names: Sara
+  - family-names: Berger-Wolf
+    given-names: Tanya
+repository-code: https://github.com/Imageomics/RecSAEI
+url: https://github.com/Imageomics/RecSAEI
+version: 1.0.0
+license: MIT
+keywords:
+  - sparse autoencoders
+  - computer vision
+  - interpretability
+  - representation autoencoders
+  - image editing
+preferred-citation:
+  type: article
+  title: RecSAEI
+  journal: arXiv
+  authors:
+    - family-names: Gu
+      given-names: Jianyang
+    - family-names: Beattie
+      given-names: Jacob
+    - family-names: Khurana
+      given-names: Mridul
+    - family-names: Chae
+      given-names: Julia
+    - family-names: Xiao
+      given-names: Xi
+    - family-names: Zhang
+      given-names: Cheng
+    - family-names: Karpatne
+      given-names: Anuj
+    - family-names: Chao
+      given-names: Wei-Lun
+    - family-names: Beery
+      given-names: Sara
+    - family-names: Berger-Wolf
+      given-names: Tanya
+references:
+  # Software citation from the upstream saev CITATION.cff.
+  - type: software
+    title: saev
+    authors:
+      - family-names: Stevens
+        given-names: Samuel
+        orcid: https://orcid.org/0009-0000-9493-7766
+    repository-code: https://github.com/Imageomics/saev
+    url: https://imageomics.github.io/saev/
+    doi: 10.5281/zenodo.20753477
+  # Paper citation from the upstream RAEv2 README.
+  - type: article
+    title: Improved Baselines with Representation Autoencoders
+    authors:
+      - family-names: Singh
+        given-names: Jaskirat
+      - family-names: Zheng
+        given-names: Boyang
+      - family-names: Wu
+        given-names: Zongze
+      - family-names: Zhang
+        given-names: Richard
+      - family-names: Shechtman
+        given-names: Eli
+      - family-names: Xie
+        given-names: Saining
+    journal: arXiv
+    year: 2026
+    url: https://arxiv.org/abs/2605.18324
+    repository-code: https://github.com/nanovisionx/RAEv2
+    identifiers:
+      - type: other
+        description: arXiv identifier
+        value: '2605.18324'
