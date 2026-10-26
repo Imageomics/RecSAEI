@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAE Feature Viewer</title>
+  <link rel="stylesheet" href="/_viewer/styles.css?v=feature-gallery-only-1">
+</head>
+<body>
+<div class="page-shell">
+  <header class="hero"><div><p class="eyebrow">RecSAEI</p><h1 id="title">SAE Feature Viewer</h1>
+    <p id="summary" class="hero-copy"></p><p id="status" role="status" aria-live="polite"></p></div></header>
+  <main class="layout">
+    <aside class="rail"><section class="panel selection-panel">
+      <h2>Dimensions</h2>
+      <label class="control-field">Token mode<select id="mode"></select></label>
+      <label class="control-field">Select by<select id="selection">
+        <option value="activation">Activation</option>
+        <option value="class_specific" selected>Class separation</option>
+      </select></label>
+      <label class="control-field" id="pooling-field">Pool patches<select id="pooling"><option value="mean">Mean</option><option value="max">Maximum</option></select></label>
+      <label class="control-field" id="scope-field">Scope<select id="scope"><option value="dataset">All images</option><option value="image">Selected image</option></select></label>
+      <label class="control-field" id="class-field" hidden>Class<select id="class-name"></select></label>
+      <label class="control-field" id="region-field">Patch indices (optional)<input id="patches" placeholder="0, 1, 16, 17"></label>
+      <label class="control-field">Number of dimensions<input id="top-k" type="number" min="1" max="200" value="20"></label>
+      <button id="rank" class="action-button">Select dimensions</button>
+      <p id="ranking-label" class="dimension-meta"></p><div id="dimensions" class="dimension-list"></div>
+    </section></aside>
+    <section class="content">
+      <section class="panel selection-panel"><div class="panel-head"><h2 id="feature-title">Strongest examples</h2></div><div id="gallery" class="gallery"></div></section>
+      <section class="panel selection-panel image-editor" aria-labelledby="image-title">
+        <header class="image-editor-heading"><h2 id="image-title">Select an image</h2><p id="image-subtitle">Choose an example to inspect and edit.</p></header>
+        <div class="comparison-layout">
+          <section class="comparison-group" aria-labelledby="inspect-title">
+            <div class="comparison-heading"><h3 id="inspect-title">Inspect feature</h3><p id="activation" class="activation-stats" aria-live="polite"></p></div>
+            <div class="comparison-pair">
+              <figure class="preview-card"><figcaption>Original</figcaption><div class="preview-image"><img id="original" alt="Selected image" hidden><span class="preview-empty">Select an image</span></div></figure>
+              <figure class="preview-card"><figcaption id="overlay-title">Activation heatmap</figcaption><div class="preview-image"><img id="overlay" alt="Spatial feature visualization" hidden><span class="preview-empty">Select a feature</span></div></figure>
+            </div>
+          </section>
+          <section class="comparison-group result-group" aria-labelledby="compare-title">
+            <div class="comparison-heading"><h3 id="compare-title">Compare intervention</h3></div>
+            <div class="comparison-pair">
+              <figure class="preview-card"><figcaption>RAE reconstruction</figcaption><div class="preview-image"><img id="reconstruction" alt="RAE reconstruction" hidden><span id="reconstruction-placeholder" class="preview-empty">Select an image</span></div></figure>
+              <figure class="preview-card"><figcaption>Intervention</figcaption><div class="preview-image"><img id="edited" alt="Intervention reconstruction" hidden><span class="preview-empty">Apply an intervention</span></div></figure>
+            </div>
+          </section>
+        </div>
+        <div id="live-controls" class="intervention-controls">
+          <div class="strength-toolbar">
+            <div class="strength-control">
+              <div class="strength-heading"><label id="strength-label" for="strength">Feature scale</label><output id="strength-value" for="strength">1</output><button id="reset-strength" class="text-button" type="button">Reset</button></div>
+              <input id="strength" type="range" min="-3" max="5" step="0.1" value="1" aria-describedby="strength-ticks">
+              <div id="strength-ticks" class="strength-ticks"><span id="strength-min">−3</span><span id="strength-neutral">1 · unchanged</span><span id="strength-max">5</span></div>
+            </div>
+            <div class="apply-control"><p id="edit-feature">Select a feature</p><button id="edit" class="action-button">Apply intervention</button></div>
+          </div>
+          <details class="advanced-settings"><summary>Advanced settings</summary><div class="control-grid">
+            <label class="control-field">Edit dimensions<input id="edit-dimensions" placeholder="12"></label>
+            <label class="control-field" id="formula-field">Patch formula<select id="formula"><option value="steering_delta">Residual-preserving delta</option><option value="direct_decode">Direct SAE decode</option></select></label>
+            <label class="control-field" id="cls-method-field" hidden>CLS steering<select id="cls-method"><option value="sae_gradient_delta">SAE gradient delta</option><option value="dense">Dense gradient</option></select></label>
+            <label class="control-field" id="source-count-field" hidden>Source dimensions<input id="source-count" type="number" min="1" value="8"></label>
+          </div></details>
+        </div>
+      </section>
+    </section>
+  </main>
+</div>
+<script src="/_viewer/app.js?v=feature-gallery-only-1" defer></script>
+</body>
+</html>

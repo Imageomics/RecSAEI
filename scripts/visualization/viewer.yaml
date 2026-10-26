@@ -1,0 +1,16 @@
+title: SAE Feature Viewer
+output_dir: artifacts/viewer
+sources:
+  patch:
+    run_dir: artifacts/saev/runs/<patch-sae-run>
+    shards_dir: artifacts/saev/shards/<validation-patch-shards>
+    fit:
+      run_dir: artifacts/saev/runs/<patch-sae-run>
+      shards_dir: artifacts/saev/shards/<training-patch-shards>
+  # Add a cls source with run_dir/shards_dir for the CLS SAE to enable CLS browsing.
+# Omit runtime for browsing saved inference results without loading models.
+runtime:
+  device: cuda
+  stage1_config: <path-to-raev2-k1-stage1-config.yaml>
+  patch_checkpoint: artifacts/saev/runs/<patch-sae-run>/checkpoint/sae.pt
+  # cls_checkpoint: artifacts/saev/runs/<cls-sae-run>/checkpoint/sae.pt

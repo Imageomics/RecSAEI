@@ -22,6 +22,7 @@ Adjust the model paths for other encoders or decoders.
 ```bash
 bash scripts/data/stage.sh
 bash scripts/sae/extract.sh
+bash scripts/sae/shuffle.sh
 bash scripts/sae/train.sh
 bash scripts/sae/infer.sh
 ```
@@ -29,4 +30,19 @@ bash scripts/sae/infer.sh
 Edit settings in the scripts or override them through environment variables.
 Outputs default to `data/staged/<dataset>`, `artifacts/saev/shards`, and
 `artifacts/saev/runs`; override `STAGED_ROOT`, `SHARDS_ROOT`, and `RUNS_ROOT`
-as needed. Keep settings consistent across stages.
+as needed. Keep settings consistent across stages. Patch training uses shuffled
+shards; validation and inference use image-ordered shards. CLS skips shuffling.
+
+## Feature viewer
+
+Edit `scripts/visualization/viewer.yaml`, then run:
+
+```bash
+bash scripts/visualization/export.sh
+bash scripts/visualization/serve.sh
+```
+
+The viewer binds to `0.0.0.0:8000`; open `http://<server-hostname>:8000`.
+Add patch/CLS inference sources as needed;
+class selection uses the optional training `fit` source. Omit `runtime` for
+browsing only. Exports reference the staged images, which must remain accessible.
