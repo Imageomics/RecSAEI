@@ -1,0 +1,19 @@
+# Local exports, weights, machine-specific launchers, and rendering tools.
+/local/
+/assets/papers/*.pdf
+/assets/papers/*.zip
+
+# Main-branch package remnants left when switching branches.
+/RAEv2/
+/core/
+/saev/
+/tests/
+/visualization/
+
+# Generated Python/editor caches.
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.ruff_cache/
+/.venv/
+.DS_Store

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="RecSAEI interprets sparse visual features by reconstructing the effects of feature interventions. Explore the paper, method, and interactive comparisons.">
+  <meta property="og:title" content="RecSAEI · From Activation to Intervention">
+  <meta property="og:description" content="Interpreting sparse visual features through reconstruction.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="assets/figures/teaser.png">
+  <title>RecSAEI · From Activation to Intervention</title>
+  <link rel="stylesheet" href="demos.css">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip-link" href="#overview">Skip to content</a>
+<nav class="site-nav" aria-label="Main navigation">
+  <div class="nav-inner">
+    <a class="wordmark" href="#top">RecSAEI</a>
+    <div class="nav-links"><a href="#overview">Overview</a><a href="#method">Method</a><details class="previous-works"><summary>Previous works</summary><div class="previous-works-menu"><a href="https://imageomics.github.io/bioclip-2/">BioCLIP 2</a><a href="https://imageomics.github.io/biocap/">BioCAP</a><a href="https://imageomics.github.io/mind-the-tail/">Mind the Tail</a></div></details></div>
+    <a class="nav-code" href="https://github.com/Imageomics/RecSAEI">GitHub <span aria-hidden="true">↗</span></a>
+  </div>
+</nav>
+<main id="top" class="project-page">
+  <header class="project-hero">
+    <p class="project-name">Reconstructive SAE Intervention</p>
+    <h1>From Activation to Intervention<span>Interpreting Sparse Visual Features<br class="desktop-break"> through Reconstruction</span></h1>
+    <div class="authors" aria-label="Authors">
+      <span>Jianyang Gu<sup>1,2</sup></span><span>Jacob Beattie<sup>1</sup></span><span>Mridul Khurana<sup>3</sup></span><span>Julia Chae<sup>2</sup></span><span>Xi Xiao<sup>4</sup></span><span>Cheng Zhang<sup>5</sup></span><span>Anuj Karpatne<sup>3</sup></span><span>Wei-Lun Chao<sup>6</sup></span><span>Sara Beery<sup>2</sup></span><span>Tanya Berger-Wolf<sup>1</sup></span>
+    </div>
+    <div class="affiliations" aria-label="Affiliations">
+      <span><sup>1</sup> The Ohio State University</span><span><sup>2</sup> Massachusetts Institute of Technology</span><span><sup>3</sup> Virginia Tech</span><span><sup>4</sup> University of Alabama at Birmingham</span><span><sup>5</sup> Texas A&amp;M University</span><span><sup>6</sup> Boston University</span>
+    </div>
+    <div class="resource-links">
+      <span class="resource-button primary" aria-label="Paper coming soon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h6"/></svg>Paper · Coming soon</span>
+      <a class="resource-button" href="https://github.com/Imageomics/RecSAEI"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6M14 3l-4 18"/></svg>Code</a>
+    </div>
+  </header>
+
+  <figure class="teaser-figure">
+    <img src="assets/figures/teaser.png" width="2800" height="1000" alt="Two sparse features activate on similar bird plumage, but reconstructing their interventions distinguishes pattern presence from pattern density." fetchpriority="high">
+    <figcaption>SAE dimensions with similar activation patterns can encode different feature meanings. Reconstructing an intervention more accurately reveals the visual property of each feature.</figcaption>
+  </figure>
+
+  <section id="overview" class="reading-section">
+    <h2>Abstract</h2>
+    <p>Sparse autoencoders (SAEs) decompose visual representations into individual features, offering a promising basis for explaining model behavior. Interpreting these features typically relies on images or pixel regions that most strongly activate them. However, this evidence becomes ambiguous when multiple features with different semantics are frequently activated in the same locations, such as texture and color of the same patterns.</p>
+    <p>We propose <strong>Reconstructive SAE Intervention (RecSAEI)</strong>, a framework that shifts feature explanation from passive observation to active visual reconstruction. By intervening on representations along SAE decoder directions and reconstructing the visual output, we provide direct evidence of a feature’s semantic meaning. We demonstrate that our method successfully disambiguates feature meanings across multiple datasets and vision encoders.</p>
+    <p>Furthermore, our framework grounds [CLS] SAE interventions in a sparse set of patch SAE decoder directions. Beyond stable target response, this attribution also exposes the compositional relationship between elementary visual patterns and high-level semantics. Our results advocate for intervention reconstruction as an essential complementary signal for explaining neural networks.</p>
+  </section>
+
+  <section id="method" class="wide-section method-section">
+    <div class="section-intro">
+      <h2>Patch SAE intervention</h2>
+      <p>For a patch SAE feature, usually from the second-last transformer layer, we increase or decrease its activation in the patches with large activations. 
+         We then pass the modified representations through the rest of the encoder and reconstruct the image with a
+         representation autoencoder (RAE). Comparing the reconstruction changes reveals what visual property the feature represents.</p>
+    </div>
+  <section id="demo" class="patch-subsection demo-block">
+    <div class="section-intro">
+      <h3>See what the features change</h3>
+      <p>Move the slider to apply the reconstructive intervention. The circle and diamond indicate two features.
+         Although they have almost identical activation patterns, reconstructions reveal their accurate sematics.
+      </p>
+    </div>
+    <section class="demo-section" aria-label="Plumage feature comparison"><div id="pattern-features"></div></section>
+    <section class="demo-section" aria-label="Eye feature comparison"><div id="eye-features"></div></section>
+  </section>
+
+  <section id="results" class="patch-subsection findings-section">
+    <div class="section-intro"><h3>Quantitative Results</h3><p>To evaluate how well the evidence explains a patch SAE feature, we give an evaluator examples with high and low feature activations. The evaluator then predicts which of two images has a higher activation for the feature. We compare the prediction accuracy with and without intervention reconstructions from increasing and decreasing the feature.</p></div>
+    <figure class="results-figure">
+    <div class="results-table-wrapper" tabindex="0" role="region" aria-label="Feature-explanation accuracy results">
+      <table>
+        <caption>Feature-explanation accuracy (%)</caption>
+        <thead><tr><th rowspan="2" scope="col">Dataset</th><th colspan="2" scope="colgroup">DINOv3</th><th colspan="2" scope="colgroup">SigLIP 2</th></tr><tr><th scope="col">Examples</th><th scope="col">+ Intervention</th><th scope="col">Examples</th><th scope="col">+ Intervention</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">NABirds</th><td>73.0</td><td><strong>74.8</strong></td><td>67.9</td><td><strong>69.2</strong></td></tr>
+          <tr><th scope="row">CUB</th><td>70.3</td><td><strong>71.4</strong></td><td>69.7</td><td><strong>71.1</strong></td></tr>
+          <tr><th scope="row">Cars</th><td>73.2</td><td><strong>74.3</strong></td><td>69.4</td><td><strong>71.0</strong></td></tr>
+          <tr><th scope="row">ImageNet</th><td><strong>76.9</strong></td><td>76.2</td><td>73.5</td><td><strong>73.9</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figcaption>Adding intervention reconstructions improves accuracy in explaining feature semantics.</figcaption>
+    </figure>
+  </section>
+  </section>
+
+  <section id="cls-intervention" class="wide-section">
+    <div class="section-intro">
+      <h2>[CLS] SAE intervention</h2>
+      <p>A [CLS] SAE feature integrates information from patch tokens and directly connects to downstream tasks. But the [CLS] token cannot be decoded directly into an image. RecSAEI attributes the feature from the last layer to patch tokens from the previous layer, identifies active and influential patch SAE features, and combines their decoder directions. Steering these patch representations changes the target [CLS] feature and produces an intervention reconstruction.</p>
+      <p>This sparse steering produces more consistent target-feature responses and better selectivity than dense gradient steering, where the patch-level gradients are used to modify the image.</p>
+    </div>
+    <figure class="cls-figure">
+      <img src="assets/figures/cls-target-response.png" width="1839" height="1578" alt="Normalized target response versus steering strength for dense steering and RecSAEI with different numbers of patch SAE features. Dense steering peaks early and then declines, while RecSAEI reaches a higher peak at larger strengths." loading="lazy">
+      <figcaption>Target [CLS] feature response after reconstruction and re-encoding. Dense steering peaks early and then declines, while RecSAEI maintains a consistent response over a wider range of steering strengths. K is the number of steered patch SAE features.</figcaption>
+    </figure>
+    <section class="interactive-example" aria-labelledby="steering-comparison-heading">
+      <h3 id="steering-comparison-heading">Dense and sparse [CLS] steering</h3>
+      <p>Compare dense gradient steering with RecSAEI's sparse patch-feature steering for the same [CLS] feature. Both use the same strength and steering budget.</p>
+      <div id="figure5-demo"></div>
+    </section>
+  </section>
+
+  <section id="cross-image-examples" class="wide-section">
+    <div class="section-intro"><h2>More examples</h2></div>
+    <section class="cross-image-demo" aria-labelledby="patch-across-images-heading">
+      <h3 id="patch-across-images-heading">Patch dimension</h3>
+      <div id="figure8-patch"></div>
+    </section>
+    <section class="cross-image-demo" aria-labelledby="cls-across-images-heading">
+      <h3 id="cls-across-images-heading">[CLS] dimension</h3>
+      <div id="figure8-cls"></div>
+    </section>
+  </section>
+
+  <section id="citation" class="reading-section citation-section">
+    <div class="citation-heading"><h2>Citation</h2><button id="copy-citation" type="button">Copy BibTeX</button></div>
+    <p>The arXiv fields in this citation template will be updated when the preprint is available.</p>
+    <pre><code id="bibtex">@article{gu_recsaei,
+  title  = {From Activation to Intervention: Interpreting
+            Sparse Visual Features through Reconstruction},
+  author = {Gu, Jianyang and Beattie, Jacob and Khurana, Mridul
+            and Chae, Julia and Xiao, Xi and Zhang, Cheng
+            and Karpatne, Anuj and Chao, Wei-Lun and Beery, Sara
+            and Berger-Wolf, Tanya},
+  journal = {arXiv preprint},
+  year = {YEAR},
+  eprint = {ARXIV_ID},
+  archivePrefix = {arXiv}
+}</code></pre>
+    <a class="text-link" href="citation.bib" download>Download BibTeX <span aria-hidden="true">↓</span></a>
+    <p id="copy-status" class="copy-status" role="status" aria-live="polite"></p>
+  </section>
+</main>
+<footer class="site-footer"><div><a class="wordmark" href="#top">RecSAEI</a><p><a href="https://github.com/Imageomics/RecSAEI">Code</a><a href="mailto:gu.1220@osu.edu">Contact</a></p></div></footer>
+<script src="data.js"></script>
+<script src="assets/cls-steering-comparison/data.js"></script>
+<script src="assets/cross-image-interventions/data.js"></script>
+<script src="demos.js"></script>
+<script src="site.js"></script>
+</body>
+</html>
