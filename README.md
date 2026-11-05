@@ -64,24 +64,17 @@ browsing only. Exports reference the staged images, which must remain accessible
 
 ## Citation
 
-If you use RecSAEI in your research, please cite our forthcoming arXiv preprint.
-The entry below is a template: replace the provisional title, `YEAR`, and
-`ARXIV_ID` once the preprint is available. Author order is shown as intended for
-the paper.
+If you use RecSAEI in your research, please cite our [arXiv preprint](https://arxiv.org/abs/2611.05522).
 
 ```bibtex
 @article{gu2026recsaei,
-  title         = {From Activation to Intervention: Interpreting Sparse Visual Features through Reconstruction},
-  author        = {Gu, Jianyang and Beattie, Jacob and Khurana, Mridul and
-                   Chae, Julia and Xiao, Xi and Zhang, Cheng and
-                   Karpatne, Anuj and Chao, Wei-Lun and Beery, Sara and
-                   Berger-Wolf, Tanya},
-  journal       = {arXiv preprint arXiv:ARXIV_ID},
-  year          = {YEAR},
-  eprint        = {ARXIV_ID},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CV},
-  url           = {https://arxiv.org/abs/ARXIV_ID}
+  title   = {From Activation to Intervention: Interpreting Sparse Visual Features through Reconstruction},
+  author  = {Gu, Jianyang and Beattie, Jacob and Khurana, Mridul and
+             Chae, Julia and Xiao, Xi and Zhang, Cheng and
+             Karpatne, Anuj and Chao, Wei-Lun and Beery, Sara and
+             Berger-Wolf, Tanya},
+  journal = {arXiv preprint arXiv:2611.05522},
+  year    = {2026}
 }
 ```
 
