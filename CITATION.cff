@@ -1,10 +1,6 @@
-# RecSAEI citation draft. No preprint has been identified in this template.
-# TODO: Replace the provisional paper title and add year, arXiv URL, and DOI
-# under preferred-citation once the preprint is available.
 cff-version: 1.2.0
 message: >-
-  If you use RecSAEI, please cite the associated paper once its arXiv details
-  are available. The preferred citation is currently a preprint template.
+  If you use RecSAEI, please cite the associated paper using the preferred citation below.
 type: software
 title: RecSAEI
 abstract: >-
@@ -57,8 +53,14 @@ keywords:
   - image editing
 preferred-citation:
   type: article
-  title: RecSAEI
-  journal: arXiv
+  title: 'From Activation to Intervention: Interpreting Sparse Visual Features through Reconstruction'
+  journal: 'arXiv preprint arXiv:2611.05522'
+  year: 2026
+  url: https://arxiv.org/abs/2611.05522
+  identifiers:
+    - type: other
+      description: arXiv identifier
+      value: '2611.05522'
   authors:
     - family-names: Gu
       given-names: Jianyang
