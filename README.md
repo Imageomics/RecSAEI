@@ -2,14 +2,14 @@
 
 Static project website for **From Activation to Intervention: Interpreting Sparse
 Visual Features through Reconstruction**. The research code lives on `main`.
+Read the [paper on arXiv](https://arxiv.org/abs/2611.05522).
 
 Open `index.html` directly or serve this branch with GitHub Pages. No build step,
 API, model weights, or external JavaScript libraries are required.
 
 The page includes the paper's authors and affiliations, the supplied teaser,
 abstract, interactive demos, method summary, explanation-accuracy results, and
-an arXiv citation template. Publication identifiers remain placeholders until
-available. The Paper button is a placeholder until a public link is available.
+an arXiv citation. The Paper button links to the arXiv preprint.
 
 ## Interactive comparisons
 
@@ -31,7 +31,7 @@ activation map to its corresponding reconstruction.
 - `site.css`, `site.js`: page layout and citation-copy interaction.
 - `demos.css`, `demos.js`: interactive comparison layout and slider behavior.
 - `data.js`: both demos' frame lists and experiment provenance.
-- `citation.bib`: the manuscript's arXiv citation template.
+- `citation.bib`: the manuscript's arXiv citation.
 - `assets/figures/`: teaser and target-response plot rendered for the webpage.
 - `assets/patterns/`, `assets/eyes/`: precomputed comparison images.
 - `assets/cls-steering-comparison/`, `assets/cross-image-interventions/`: precomputed frames and data for the additional comparisons.
